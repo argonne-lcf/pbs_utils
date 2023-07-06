@@ -1,0 +1,46 @@
+#!/bin/bash
+# Copyright (C) 2022-2023 Timothy J. Williams
+# License MIT [https://opensource.org/licenses/MIT]
+
+usage="Usage: $0 [-h]"
+helpText="Prints human-readable list of active and future reservations on the system."
+
+if [ "$#" -ne 0 ] ; then
+    if [ "$#" -ge 2 ] ; then
+        echo $usage >&2
+        exit 1
+    else
+        helpArg=$1
+        if [[ "$helpArg" != "-h" ]]; then
+            echo "Unknown argument: $helpArg ; usage: $usage" >&2
+            exit 1
+        else
+            echo $helpText >&2
+            exit 0
+        fi
+    fi
+fi
+
+usefulFields=("Reserve_Name" "queue" "Resource_List.nodect" "reserve_start" "reserve_end" "reserve_state")
+typeset -A renamedFields
+renamedFields[Reserve_Name]="Reservation        "
+renamedFields[queue]="  queue            "
+renamedFields[Resource_List.nodect]="  nodes            "
+renamedFields[reserve_start]="  start            "
+renamedFields[reserve_end]="  end              "
+renamedFields[reserve_state]="  state            "
+
+while IFS=$':= \t' read key value; do
+    # [[ $key = [#!]* ]] || [[ $key = "" ]] || props[$key]=$value;
+    if [[ "${usefulFields[@]}" =~ $key ]]; then
+        if [[ $key != "" ]]; then
+            if [[ $key == Reserve_Name ]]; then
+                echo ""
+            fi
+            # echo "$key = $value"
+            echo "${renamedFields[$key]} = $value"
+        fi
+    fi
+done < <(pbs_rstat -F)
+
+echo ""
