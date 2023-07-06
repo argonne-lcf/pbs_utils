@@ -31,13 +31,11 @@ renamedFields[reserve_end]="  end              "
 renamedFields[reserve_state]="  state            "
 
 while IFS=$':= \t' read key value; do
-    # [[ $key = [#!]* ]] || [[ $key = "" ]] || props[$key]=$value;
     if [[ "${usefulFields[@]}" =~ $key ]]; then
         if [[ $key != "" ]]; then
             if [[ $key == Reserve_Name ]]; then
                 echo ""
             fi
-            # echo "$key = $value"
             echo "${renamedFields[$key]} = $value"
         fi
     fi
