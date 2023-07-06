@@ -1,0 +1,33 @@
+#!/bin/bash
+# Copyright (C) 2022-2023 Timothy J. Williams
+# License MIT [https://opensource.org/licenses/MIT]
+
+usage="Usage: $0 [-h]"
+helpText="Prints human-readable counts of status for all the nodes."
+
+if [ "$#" -ne 0 ] ; then
+    if [ "$#" -ge 2 ] ; then
+        echo $usage >&2
+        exit 1
+    else
+        helpArg=$1
+        if [[ "$helpArg" != "-h" ]]; then
+            echo "Unknown argument: $helpArg ; usage: $usage" >&2
+            exit 1
+        else
+            echo $helpText >&2
+            exit 0
+        fi
+    fi
+fi
+
+nodeStatuses=("free" "job-exclusive" "resv-exclusive" "down" "offline" )
+
+echo ""
+echo "Nodes  Status"
+echo "-----  ------"
+for status in "${nodeStatuses[@]}"; do
+    printf "%5s  %-18s \n" `pbsnodes -avSj | grep $status | wc -l` $status
+done
+
+echo ""
