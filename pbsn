@@ -1,0 +1,81 @@
+#!/bin/bash
+help(){ cat; exit; }<<'EOH'
+pbsn (PBS Nodes filter) 0.2
+Copyright (C) 2022-2023 Xiao-Yong Jin
+License MIT [https://opensource.org/licenses/MIT]
+
+usage: pbsn [-h]
+EOH
+set -eu
+
+while (($#>0));do
+	case $1 in
+	(-h) help ;;
+	(-*) echo "unknown arg $1"; help ;;
+	esac
+	shift
+done
+
+run(){
+awk \
+'
+function printnode(node){
+	if(!(node in printed)){
+		printf(sfmt,
+			ns[node]["resources_available.host"],
+			ns[node]["state"],
+			ns[node]["resources_available.broken"],
+			ns[node]["resources_available.validation"],
+			ns[node]["comment"])
+		printed[node]=1
+	}
+}
+function printnodelist(list){
+	if(length(list)>0)
+		for(node in list)
+			printnode(node)
+}
+/^[a-z]/{
+	node=$1
+}
+/ = /{
+	key=$1
+	$1=$2=""
+	sub(/^ +/, "")
+	ns[node][key]=$0
+}
+END{
+	for(node in ns){
+		if(ns[node]["resources_available.validation"]=="True")
+			validation[node]=1
+		else{
+			if(ns[node]["state"]~"down|offline")
+				down[node]=1
+			else if(ns[node]["state"]=="free")
+				free[node]=1
+			else if(ns[node]["state"]=="job-exclusive")
+				job[node]=1
+			else if(ns[node]["state"]~/resv-exclusive/)
+				resv[node]=1
+			else
+				other[node]=1
+			if(ns[node]["resources_available.broken"]=="True")
+				broken[node]=1
+		}
+	}
+	print "#total",length(ns)," validation",length(validation)," down",length(down)," free",length(free)," resv",length(resv)," job",length(job)," other",length(other)
+	sfmt="%-16s %22s %10s %10s  %s\n"
+	printf(sfmt, "#node", "state", "broken", "validation", "comment")
+	printnodelist(broken)
+	printnodelist(down)
+	printnodelist(validation)
+	printnodelist(other)
+}
+'
+}
+
+if test -t 0;then
+	pbsnodes -a | run
+else
+	run
+fi
