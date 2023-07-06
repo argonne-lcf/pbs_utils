@@ -1,0 +1,218 @@
+#!/bin/bash
+help(){ cat; exit; }<<'EOH'
+pbsq (PBS Qstat filter) 0.3
+Copyright (C) 2022-2023 Xiao-Yong Jin
+License MIT [https://opensource.org/licenses/MIT]
+
+usage: pbsq [-h] [-f FILTER] [-s HEADER1[,OPT]:HEADER2[,OPT]:..] [-H HEADER1:HEADER2:...]
+EOH
+set -eu
+
+filter=
+
+if [[ $(hostname) == polaris* ]];then
+	sort=TimeRemaining,r:EstStart,r:State:Score,n:QueuedTime,n
+	header=JobId:User:Account:Score:WallTime:QueuedTime:EstStart:RunTime:TimeRemaining:Nodes:State:Queue:JobName:Location/Comments
+else
+	sort=TimeRemaining,r:EstStart,r:State:QueuedTime,n
+	header=JobId:User:Account:WallTime:QueuedTime:EstStart:RunTime:TimeRemaining:Nodes:State:Queue:JobName:Location/Comments
+fi
+
+while (($#>0));do
+	case $1 in
+	(-f) filter="$2"; shift ;;
+	(-s) sort="$2"; shift ;;
+	(-H) header="$2"; shift ;;
+	(-h) help ;;
+	(-*) echo "unknown arg $1"; help ;;
+	esac
+	shift
+done
+
+run(){
+awk \
+-v "filter=$filter" \
+-v "sort=$sort" \
+-v "header=$header" \
+-v cur_time=$(date +%s) \
+'
+function min(x,y){
+	if(x<y) return x
+	else return y
+}
+function max(x,y){
+	if(x>y) return x
+	else return y
+}
+function datetime_to_epoch(t,	c,r){
+	c="date -d \""t"\" +%s"
+	c | getline r
+	close(c)
+	return r
+}
+function hms_to_sec(t,	r){
+	split(t, r, ":")
+	return 3600*r[1]+60*r[2]+r[3]
+}
+function ftime_pos(t,	r){
+	r=":"sprintf("%02d",t%60)
+	t=int(t/60)
+	r=":"sprintf("%02d",t%60)r
+	t=int(t/60)
+	r=sprintf("%02d",t)r
+	return r
+}
+function ftime(t){
+	if(t<0)
+		return "-"ftime_pos(-t)
+	else
+		return ftime_pos(t)
+}
+function is_running(job){
+	# job["job_state"] == "R"  # somehow not reliable?
+	return job["job_state"] != "H" && "stime" in job && ! ("obitime" in job)
+}
+function query(job,key,	r,eligible_time,walltime){
+	if(key=="JobName"){
+		r=job["Job_Name"]
+		r=substr(r, 1, 16)
+	}else if(key=="Account") r=job["Account_Name"]
+	else if(key=="Nodes") r=job["Resource_List.nodect"]
+	else if(key=="State") r=job["job_state"]
+	else if(key=="Queue") r=job["queue"]
+	else if(key=="WallTime") r=job["Resource_List.walltime"]
+	else if(key=="User"){
+		r=job["Job_Owner"]
+		sub(/@.*/, "", r)
+	}else if(key=="QueuedTime"){
+		if(is_running(job))
+			r=ftime(datetime_to_epoch(job["stime"])-datetime_to_epoch(job["qtime"]))
+		else
+			r=ftime(cur_time-datetime_to_epoch(job["qtime"]))
+		fi
+	}else if(key=="EstStart"){
+		if("estimated.start_time" in job && job["job_state"] != "H" && ! is_running(job))
+			r=ftime(datetime_to_epoch(job["estimated.start_time"])-cur_time)
+		else
+			r="n/a"
+		fi
+	}else if(key=="RunTime"){
+		if(is_running(job))
+			r=ftime(cur_time-datetime_to_epoch(job["stime"]))
+		else
+			r="n/a"
+	}else if(key=="TimeRemaining"){
+		if(is_running(job))
+			r=ftime(hms_to_sec(job["Resource_List.walltime"])+datetime_to_epoch(job["stime"])-cur_time)
+		else
+			r="n/a"
+	}else if(key=="Location/Comments"){
+		if("exec_host" in job){
+			r=job["exec_host"]
+			gsub(/\/[^+]*\+/, ",", r)
+			sub(/\/[^+]*/, "", r)
+		}else if(job["job_state"] != "H" && "estimated.exec_vnode" in job){
+			r=job["estimated.exec_vnode"]
+			gsub(/[()]/, "", r)
+			gsub(/:[^+]*\+/, ",", r)
+			sub(/:[^+]*/, "", r)
+			r=r" \""job["comment"]"\""
+		}else
+			r=job["comment"]
+	}else if(key=="Score"){
+		# $ qstat -Bfw|grep job_sort_formula
+		#     job_sort_formula = base_score + score_boost + (enable_wfp * wfp_factor * (eligible_time ** 2 / min(max(walltime,21600.0),43200.0) ** 3  * project_priority * nodect / total_cpus)) + (enable_backfill * min(backfill_max, eligible_time / backfill_factor)) + (enable_fifo * eligible_time / fifo_factor)
+		eligible_time=hms_to_sec(job["eligible_time"])
+		walltime=hms_to_sec(job["Resource_List.walltime"])
+		r=job["Resource_List.base_score"] + job["Resource_List.score_boost"] + (job["Resource_List.enable_wfp"] * job["Resource_List.wfp_factor"] * (eligible_time ** 2 / min(max(walltime,21600.0),43200.0) ** 3  * job["Resource_List.project_priority"] * job["Resource_List.nodect"] / job["Resource_List.total_cpus"])) + (job["Resource_List.enable_backfill"] * min(job["Resource_List.backfill_max"], eligible_time / job["Resource_List.backfill_factor"])) + (job["Resource_List.enable_fifo"] * eligible_time / job["Resource_List.fifo_factor"])
+	}else r=job[key]
+	return r
+}
+/^Job Id: /{
+	id=$3
+	sub(/\.(amn-0001|polaris-pbs-01\..*)/, "", id)
+	js[id]["JobId"]=id
+}
+/ = /{
+	key=$1
+	$1=$2=""
+	sub(/^ +/, "")
+	js[id][key]=$0
+}
+END{
+	nitems=split(header, header_list, ":")
+	# prepare output
+	for(id in js){
+		has_match=0
+		for(i in header_list){
+			output[id][i]=query(js[id],header_list[i])
+			if(output[id][i] ~ filter)
+				++has_match
+		}
+		if(has_match==0)
+			delete output[id]
+	}
+	# get widths
+	for(i in header_list){
+		n=length(header_list[i])
+		width[i]=n
+	}
+	++width[1]	# for the additional '#'
+	for(id in output){
+		for(i in header_list){
+			n=length(output[id][i])
+			if(width[i]<n)
+				width[i]=n
+		}
+	}
+	# ignore the width of the last column
+	width[nitems]=1
+	# left/right align
+	n=split("Score:WallTime:QueuedTime:RunTime:TimeRemaining:Nodes", right_align_list, ":")
+	for(i=1;i<=n;++i)
+		right_align[right_align_list[i]]=1
+	for(i in header_list){
+		if(width[i]==0)
+			print "warning: query failed for header",header_list[i]
+		if(!(header_list[i] in right_align))
+			width[i]=-width[i]
+	}
+	# parse sort columns
+	nsort=split(sort, sort_header, ":")
+	for(i in sort_header){
+		if(1<split(sort_header[i], specs, ","))
+			sort_opt[i]=specs[2]
+		else
+			sort_opt[i]=""
+		sort_header[i]=specs[1]
+	}
+	# print headers
+	for(i=1;i<=nitems;++i){
+		h=header_list[i]
+		for(j in sort_header)
+			if(h==sort_header[j])
+				sort_key[j]=i
+		if(i==1)
+			h="#"h
+		o=o sprintf("%"width[i]"s  ", h)
+	}
+	print o
+	sort_cmd="sort"
+	for(j=1;j<=nsort;++j)
+		sort_cmd=sort_cmd" -k "sort_key[j]sort_opt[j]","sort_key[j]sort_opt[j]
+	for(id in output){
+		o=""
+		for(i=1;i<=nitems;++i)
+			o=o sprintf("%"width[i]"s  ", output[id][i])
+		print o |sort_cmd
+	}
+	close(sort_cmd)
+}
+'
+}
+
+if test -t 0;then
+	qstat -tfw | run
+else
+	run
+fi
