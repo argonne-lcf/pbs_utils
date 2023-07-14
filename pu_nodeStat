@@ -21,7 +21,7 @@ if [ "$#" -ne 0 ] ; then
     fi
 fi
 
-nodeStatuses=("free" "job-exclusive" "resv-exclusive" "down" "offline" )
+nodeStatuses=("free" "job-exclusive" "resv-exclusive" "down" "offline" "state-unknown" )
 
 echo ""
 echo "Nodes  Status"
