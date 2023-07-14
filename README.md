@@ -1,2 +1,2 @@
 # pbs_utils
-Scripts to help make PBS useful to ALCF users.
+Scripts to help make PBSPro useful to ALCF users.
