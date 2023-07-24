@@ -130,7 +130,7 @@ function query(job,key,	r,eligible_time,walltime){
 }
 /^Job Id: /{
 	id=$3
-	sub(/\.(amn-0001|polaris-pbs-01\..*)/, "", id)
+	sub(/\.(amn-[0-9]+|[^.]+-pbs-[0-9]+\..*)/, "", id)
 	js[id]["JobId"]=id
 }
 / = /{
