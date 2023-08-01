@@ -21,13 +21,36 @@ if [ "$#" -ne 0 ] ; then
     fi
 fi
 
-nodeStatuses=("free" "job-exclusive" "resv-exclusive" "down" "offline" "state-unknown" )
+nodeStatuses=("free" "job-exclusive" "resv-exclusive" "down" "offline" "down,offline" "state-unknown")
 
 echo ""
+echo "PARTITION: workq"
+echo "---------------------"
 echo "Nodes  Status"
 echo "-----  ------"
 for status in "${nodeStatuses[@]}"; do
-    printf "%5s  %-18s \n" `pbsnodes -avSj | grep $status | wc -l` $status
+    printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
 done
+printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+
+echo ""
+echo "PARTITION: debug"
+echo "---------------------"
+echo "Nodes  Status"
+echo "-----  ------"
+for status in "${nodeStatuses[@]}"; do
+    printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug=="True" and .resources_available.validation!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+done
+printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( .resources_available.debug=="True" and .resources_available.validation!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+
+echo ""
+echo "PARTITION: validation"
+echo "---------------------"
+echo "Nodes  Status"
+echo "-----  ------"
+for status in "${nodeStatuses[@]}"; do
+    printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+done
+printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
 
 echo ""
