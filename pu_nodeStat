@@ -21,7 +21,7 @@ if [ "$#" -ne 0 ] ; then
     fi
 fi
 
-nodeStatuses=("free" "job-exclusive" "resv-exclusive" "down" "offline" "down,offline" "state-unknown")
+nodeStatuses=( $(pbsnodes -a -F json | jq -r '.nodes[] | [.state] | @tsv' | sort | uniq) )
 
 echo ""
 echo "PARTITION: workq"
