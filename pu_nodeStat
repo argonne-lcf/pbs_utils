@@ -21,7 +21,10 @@ if [ "$#" -ne 0 ] ; then
     fi
 fi
 
+# nodeStatuses=("free" "job-exclusive" "resv-exclusive" "down" "offline" "down,offline" "state-unknown")
 nodeStatuses=( $(pbsnodes -a -F json | jq -r '.nodes[] | [.state] | @tsv' | sort | uniq) )
+
+pbsnodesOutput=`pbsnodes -a -F json`
 
 echo ""
 echo "PARTITION: workq"
@@ -29,9 +32,9 @@ echo "---------------------"
 echo "Nodes  Status"
 echo "-----  ------"
 for status in "${nodeStatuses[@]}"; do
-    printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
 done
-printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
 
 echo ""
 echo "PARTITION: debug"
@@ -39,9 +42,9 @@ echo "---------------------"
 echo "Nodes  Status"
 echo "-----  ------"
 for status in "${nodeStatuses[@]}"; do
-    printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug=="True" and .resources_available.validation!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug=="True" and .resources_available.validation!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
 done
-printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( .resources_available.debug=="True" and .resources_available.validation!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.debug=="True" and .resources_available.validation!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
 
 echo ""
 echo "PARTITION: validation"
@@ -49,8 +52,8 @@ echo "---------------------"
 echo "Nodes  Status"
 echo "-----  ------"
 for status in "${nodeStatuses[@]}"; do
-    printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
 done
-printf "%5s  %-18s \n" `pbsnodes -a -F json | jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
 
 echo ""
