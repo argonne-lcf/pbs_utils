@@ -15,6 +15,12 @@ fi
 ranks_per_node=$1
 shift_amount=${2:-0} # Default shift amount is 0 if not provided
 
+if [ "$ranks_per_node" -eq 1 ]; then
+    cpu_bind_list="0-$((cores_per_socket_physical * sockets + cores_per_socket_logical * sockets - 1))"
+    echo "--cpu-bind list:$cpu_bind_list"
+    exit 0
+fi
+
 # Calculate the maximum allowable shift based on the remaining cores
 ranks_per_socket=$((ranks_per_node / sockets))
 max_shift=$((cores_per_socket_physical % ranks_per_socket))
