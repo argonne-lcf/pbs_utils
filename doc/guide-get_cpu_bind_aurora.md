@@ -10,21 +10,21 @@ The script is executed with one required and one optional argument:
 
 ### Command Format
 ```bash
-./cpu_binding_script.sh <ranks_per_node> [shift_amount]
+./get_cpu_bind_aurora <ranks_per_node> [shift_amount]
 ```
 
 ### Examples
 1. **Basic Usage**
    - For a node with 4 ranks:
      ```bash
-     ./cpu_binding_script.sh 4
+     ./get_cpu_bind_aurora 4
      ```
    - This will output a CPU binding list without any shift.
 
 2. **With Shift Amount**
    - For a node with 4 ranks and a shift amount of 2:
      ```bash
-     ./cpu_binding_script.sh 4 2
+     ./get_cpu_bind_aurora 4 2
      ```
    - This will output a CPU binding list with the specified shift.
 
