@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (C) 2024 Nathan S. Nichols
+# License MIT [https://opensource.org/licenses/MIT]
 
 # Constants
 cores_per_socket_physical=52
