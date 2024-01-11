@@ -21,6 +21,13 @@ if [ "$ranks_per_node" -eq 1 ]; then
     exit 0
 fi
 
+# Round up ranks_per_node to the next even number if it's odd
+was_odd=0
+if [ $((ranks_per_node % 2)) -ne 0 ]; then
+    ranks_per_node=$((ranks_per_node + 1))
+    was_odd=1
+fi
+
 # Calculate the maximum allowable shift based on the remaining cores
 ranks_per_socket=$((ranks_per_node / sockets))
 max_shift=$((cores_per_socket_physical % ranks_per_socket))
@@ -78,5 +85,10 @@ cpu_ranges_socket1=$(generate_cpu_ranges 52 156 $ranks_per_socket)
 
 # Combine the CPU ranges for both sockets in the correct order
 cpu_bind_list="${cpu_ranges_socket0}:${cpu_ranges_socket1}"
+
+# Conditionally trim the last group if ranks_per_node was originally odd
+if [ "$was_odd" -eq 1 ]; then
+    cpu_bind_list="${cpu_bind_list%:*}"
+fi
 
 echo "--cpu-bind list:$cpu_bind_list"
