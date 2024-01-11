@@ -1,0 +1,76 @@
+#!/bin/bash
+
+# Constants
+cores_per_socket_physical=52
+cores_per_socket_logical=52
+sockets=2
+total_physical_cores=$((cores_per_socket_physical * sockets))
+
+# Check if number of ranks per node is provided
+if [ "$#" -lt 1 ]; then
+    echo "Usage: $0 <ranks_per_node> [shift_amount]"
+    exit 1
+fi
+
+ranks_per_node=$1
+shift_amount=${2:-0} # Default shift amount is 0 if not provided
+
+# Calculate the maximum allowable shift based on the remaining cores
+ranks_per_socket=$((ranks_per_node / sockets))
+max_shift=$((cores_per_socket_physical % ranks_per_socket))
+
+# Check if the shift amount is greater than the max allowable shift
+if [ "$shift_amount" -gt "$max_shift" ]; then
+    # N.B. Uncomment to throw error, otherwise shift_amount is silently set to zero
+    #echo "Error: Shift amount ($shift_amount) is greater than the maximum allowable shift ($max_shift)."
+    #exit 1
+    shift_amount=0
+fi
+
+# Function to generate CPU ranges
+generate_cpu_ranges() {
+    local cores_physical_start=$1
+    local cores_logical_start=$2
+    local ranks_per_socket=$3
+    local cpu_ranges=""
+    local cores_per_rank=$((cores_per_socket_physical / ranks_per_socket))
+
+    if [ "$ranks_per_socket" -gt "$cores_per_socket_physical" ]; then
+        local remaining_ranks=$((ranks_per_socket - cores_per_socket_physical))
+
+        # Assign ranks to physical cores
+        for (( rank=0; rank<cores_per_socket_physical; rank++ )); do
+            local physical_core=$((cores_physical_start + rank))
+            cpu_ranges+="$physical_core:"
+        done
+
+        # Assign remaining ranks to logical cores
+        for (( rank=0; rank<remaining_ranks; rank++ )); do
+            local logical_core=$((cores_logical_start + rank))
+            cpu_ranges+="$logical_core:"
+        done
+    else
+        for (( rank=0; rank<ranks_per_socket; rank++ )); do
+            local physical_start=$((cores_physical_start + rank * cores_per_rank + shift_amount))
+            local logical_start=$((cores_logical_start + rank * cores_per_rank + shift_amount))
+
+            if [[ $cores_per_rank -gt 1 ]]; then
+                local physical_end=$((physical_start + cores_per_rank - 1))
+                local logical_end=$((logical_start + cores_per_rank - 1))
+                cpu_ranges+="$physical_start-$physical_end,$logical_start-$logical_end:"
+            else
+                cpu_ranges+="$physical_start,$logical_start:"
+            fi
+        done
+    fi
+
+    echo "${cpu_ranges%:}"
+}
+
+cpu_ranges_socket0=$(generate_cpu_ranges 0 104 $ranks_per_socket)
+cpu_ranges_socket1=$(generate_cpu_ranges 52 156 $ranks_per_socket)
+
+# Combine the CPU ranges for both sockets in the correct order
+cpu_bind_list="${cpu_ranges_socket0}:${cpu_ranges_socket1}"
+
+echo "--cpu-bind list:$cpu_bind_list"
