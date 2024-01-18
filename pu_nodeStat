@@ -28,6 +28,8 @@ nodeStatuses=( $(pbsnodes -a -F json | jq -r '.nodes[] | [.state] | @tsv' | sort
 
 pbsnodesOutput=`pbsnodes -a -F json`
 
+totalNodes=0
+
 if [[ "$partition" == "LustreApps" || "$partition" == "EarlyAppAccess"  ]]; then
     echo ""
     echo "PARTITION: LustreApps (EarlyAppAccess)"
@@ -35,9 +37,17 @@ if [[ "$partition" == "LustreApps" || "$partition" == "EarlyAppAccess"  ]]; then
     echo "Nodes  Status"
     echo "-----  ------"
     for status in "${nodeStatuses[@]}"; do
-        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken!="True" and .resources_available.at_queue=="LustreApps") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` ${status}
+        ((nodes = `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken!="True" and .resources_available.at_queue=="LustreApps") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` ))
+        printf "%5s  %-18s \n" $nodes $status
+        (( totalNodes += nodes ))
     done
-    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" > jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken=="True" and .resources_available.at_queue=="LustreApps") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` "broken"
+    (( nodes = `printf '%s\n' "$pbsnodesOutput" > jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken=="True" and .resources_available.at_queue=="LustreApps") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` ))
+    printf "%5s  %-18s \n" $nodes "broken"
+    (( totalNodes += nodes ))
+    echo "-----  --------------"
+    printf "%5s  %-18s \n" $totalNodes "Total Nodes"
+    echo ""
+    exit 0
 fi
 
 if [[ "$partition" == "intel_get_well"  ]]; then
@@ -47,9 +57,17 @@ if [[ "$partition" == "intel_get_well"  ]]; then
     echo "Nodes  Status"
     echo "-----  ------"
     for status in "${nodeStatuses[@]}"; do
-        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken!="True" and .resources_available.at_queue=="intel_get_well") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` ${status}
+        (( nodes = `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken!="True" and .resources_available.at_queue=="intel_get_well") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` ))
+        printf "%5s  %-18s \n" $nodes $status
+        (( totalNodes += nodes ))
     done
-    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" > jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken=="True" and .resources_available.at_queue=="intel_get_well") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` "broken"
+    (( nodes = `printf '%s\n' "$pbsnodesOutput" > jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken=="True" and .resources_available.at_queue=="intel_get_well") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` ))
+    printf "%5s  %-18s \n" $nodes "broken"
+    (( totalNodes += nodes ))
+    echo "-----  --------------"
+    printf "%5s  %-18s \n" $totalNodes "Total Nodes"
+    echo ""
+    exit 0
 fi
 
 if [[ "$partition" == "intel"  ]]; then
@@ -59,9 +77,15 @@ if [[ "$partition" == "intel"  ]]; then
     echo "Nodes  Status"
     echo "-----  ------"
     for status in "${nodeStatuses[@]}"; do
-        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.intel=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+        (( nodes = `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.intel=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` ))
+        printf "%5s  %-18s \n" $nodes $status
+        (( totalNodes += nodes ))
     done
-    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.intel=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+    (( nodes = `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.intel=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` ))
+    printf "%5s  %-18s \n" $nodes "broken"
+    (( totalNodes += nodes ))
+    echo "-----  --------------"
+    printf "%5s  %-18s \n" $totalNodes "Total Nodes"
     echo ""
     exit 0
 fi
@@ -73,9 +97,15 @@ if [[ "$partition" == "hpe"  ]]; then
     echo "Nodes  Status"
     echo "-----  ------"
     for status in "${nodeStatuses[@]}"; do
-        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.hpe=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+        (( nodes = `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.hpe=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` ))
+        printf "%5s  %-18s \n" $nodes $status
+        (( totalNodes += nodes ))
     done
-    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.hpe=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+    (( nodes = `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.hpe=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` ))
+    printf "%5s  %-18s \n" $nodes "broken"
+    (( totalNodes += nodes ))
+    echo "-----  --------------"
+    printf "%5s  %-18s \n" $totalNodes "Total Nodes"
     echo ""
     exit 0
 fi
