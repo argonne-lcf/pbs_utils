@@ -1,59 +1,139 @@
 #!/bin/bash
-# Copyright (C) 2022-2023 Timothy J. Williams
+# Copyright (C) 2022-2024 Timothy J. Williams
 # License MIT [https://opensource.org/licenses/MIT]
 
-usage="Usage: $0 [-h]"
-helpText="Prints human-readable counts of status for all the nodes."
+usage="Usage: $0 [-h] [LustreApps|EarlyAppAccess|intel_get_well|x4407|M248440|M242798|hpe|intel|all]"
+helpText=$'Prints human-readable counts of status for nodes on Aurora.\n\tLustreApps | EarlyAppAccess\t- EarlyAppAccess queue nodes\n\tintel_get_well\t\t\t- Intel system stabilization queue nodes\n\thpe\t\t\t\t- hpe nodes\n\tintel\t\t\t\t- intel nodes\n\tall\t\t\t\t- status of all nodes'
 
-if [ "$#" -ne 0 ] ; then
-    if [ "$#" -ge 2 ] ; then
+if [ "$#" -ne 1 ] ; then
+    argCnt="$#"
+    if [[ "$argCnt" -ge 2 ||  "$argCnt" == 0 ]] ; then
         echo $usage >&2
         exit 1
+    fi
+else
+    partition=$1
+    if [[ "$partition" == "-h" ]]; then
+        echo $usage $'\n'"$helpText" >&2
+        exit 0
     else
-        helpArg=$1
-        if [[ "$helpArg" != "-h" ]]; then
-            echo "Unknown argument: $helpArg ; usage: $usage" >&2
+        if [[ "$partition" != "LustreApps" && "$partition" != "EarlyAppAccess" && "$partition" != "x4407" && "$partition" != "M248440" && "$partition" != "M242798" && "$partition" != "hpe" && "$partition" != "intel" && "$partition" != "all"  ]]; then
+            echo "Unknown argument: $partition ; usage: $usage" >&2
             exit 1
-        else
-            echo $helpText >&2
-            exit 0
         fi
     fi
 fi
 
-# nodeStatuses=("free" "job-exclusive" "resv-exclusive" "down" "offline" "down,offline" "state-unknown")
 nodeStatuses=( $(pbsnodes -a -F json | jq -r '.nodes[] | [.state] | @tsv' | sort | uniq) )
 
 pbsnodesOutput=`pbsnodes -a -F json`
 
-echo ""
-echo "PARTITION: workq"
-echo "---------------------"
-echo "Nodes  Status"
-echo "-----  ------"
-for status in "${nodeStatuses[@]}"; do
-    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
-done
-printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+if [[ "$partition" == "M242798" ]]; then
+    echo ""
+    echo "PARTITION: M242798 (x4407, AuroraSC23app)"
+    echo "------------------------"
+    echo "Nodes  Status"
+    echo "-----  ------"
+    for status in "${nodeStatuses[@]}"; do
+        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel!="True" and .resources_available.hpe!="True" and .resources_available.broken!="True" and .resv=="M242798.aurora-pbs-0001.hostmgmt.cm.aurora.alcf.anl.gov") | [.resources_available.host,.state] | @tsv' | grep "x4407" | wc -l` $status
+    done
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" > jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel!="True" and .resources_available.hpe!="True" and .resources_available.broken=="True" and .resv=="M242798.aurora-pbs-0001.hostmgmt.cm.aurora.alcf.anl.gov") | [.resources_available.host,.state] | @tsv' | grep "x4407" | wc -l` "broken"
+fi
 
-echo ""
-echo "PARTITION: debug"
-echo "---------------------"
-echo "Nodes  Status"
-echo "-----  ------"
-for status in "${nodeStatuses[@]}"; do
-    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug=="True" and .resources_available.validation!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
-done
-printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.debug=="True" and .resources_available.validation!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+if [[ "$partition" == "M248440" ]]; then
+    echo ""
+    echo "PARTITION: M248440 (EarlyAppAccess)"
+    echo "------------------------"
+    echo "Nodes  Status"
+    echo "-----  ------"
+    for status in "${nodeStatuses[@]}"; do
+        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken!="True" and .resv=="M248440.aurora-pbs-0001.hostmgmt.cm.aurora.alcf.anl.gov") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` ${status}
+    done
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" > jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken=="True" and .resv=="M248440.aurora-pbs-0001.hostmgmt.cm.aurora.alcf.anl.gov") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` "broken"
+fi
 
-echo ""
-echo "PARTITION: validation"
-echo "---------------------"
-echo "Nodes  Status"
-echo "-----  ------"
-for status in "${nodeStatuses[@]}"; do
-    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
-done
-printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+if [[ "$partition" == "LustreApps" || "$partition" == "EarlyAppAccess"  ]]; then
+    echo ""
+    echo "PARTITION: LustreApps (EarlyAppAccess)"
+    echo "------------------------"
+    echo "Nodes  Status"
+    echo "-----  ------"
+    for status in "${nodeStatuses[@]}"; do
+        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken!="True" and .resources_available.at_queue=="LustreApps") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` ${status}
+    done
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" > jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel=="True" and .resources_available.hpe!="True" and .resources_available.broken=="True" and .resources_available.at_queue=="LustreApps") | [.resources_available.host,.state] | @tsv' | grep "x" | wc -l` "broken"
+fi
 
-echo ""
+
+if [[ "$partition" == "x4407"  ]]; then
+    echo ""
+    echo "PARTITION: workq (x4407)"
+    echo "------------------------"
+    echo "Nodes  Status"
+    echo "-----  ------"
+    for status in "${nodeStatuses[@]}"; do
+        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel!="True" and .resources_available.hpe!="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | grep "x4407" | wc -l` $status
+    done
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" > jq -r '.nodes[] | select( .resources_available.debug!="True" and .resources_available.validation!="True" and .resources_available.intel!="True" and .resources_available.hpe!="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | grep "x4407" | wc -l` "broken"
+
+    echo ""
+    echo "PARTITION: validation (x4407)"
+    echo "-----------------------------"
+    echo "Nodes  Status"
+    echo "-----  ------"
+    for status in "${nodeStatuses[@]}"; do
+        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.validation=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+    done
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.validation=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+    echo ""
+    exit 0
+fi
+
+if [[ "$partition" == "intel"  ]]; then
+    echo ""
+    echo "PARTITION: intel"
+    echo "---------------------"
+    echo "Nodes  Status"
+    echo "-----  ------"
+    for status in "${nodeStatuses[@]}"; do
+        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.intel=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+    done
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.intel=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+    echo ""
+    exit 0
+fi
+
+if [[ "$partition" == "hpe"  ]]; then
+    echo ""
+    echo "PARTITION: hpe"
+    echo "---------------------"
+    echo "Nodes  Status"
+    echo "-----  ------"
+    for status in "${nodeStatuses[@]}"; do
+        printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.hpe=="True" and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` $status
+    done
+    printf "%5s  %-18s \n" `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.hpe=="True" and .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` "broken"
+    echo ""
+    exit 0
+fi
+
+if [[ "$partition" == "all"  ]]; then
+    totalNodes=0
+    echo ""
+    echo "PARTITION: ALL"
+    echo "---------------------"
+    echo "Nodes  Status"
+    echo "-----  --------------"
+    for status in "${nodeStatuses[@]}"; do
+        (( nodes = `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( (.state=="'${status}'") and .resources_available.broken!="True") | [.resources_available.host,.state] | @tsv' | wc -l` ))
+        printf "%5s  %-18s \n" $nodes $status
+        (( totalNodes += nodes ))
+    done
+    (( nodes = `printf '%s\n' "$pbsnodesOutput" | jq -r '.nodes[] | select( .resources_available.broken=="True") | [.resources_available.host,.state] | @tsv' | wc -l` ))
+    printf "%5s  %-18s \n" $nodes "broken"
+    (( totalNodes += nodes ))
+    echo "-----  --------------"
+    printf "%5s  %-18s \n" $totalNodes "Total Nodes"
+    echo ""
+    exit 0
+fi
