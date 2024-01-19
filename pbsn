@@ -1,16 +1,21 @@
 #!/bin/bash
 help(){ cat; exit; }<<'EOH'
-pbsn (PBS Nodes filter) 0.2
+pbsn (PBS Nodes filter) 0.3
 Copyright (C) 2022-2023 Xiao-Yong Jin
 License MIT [https://opensource.org/licenses/MIT]
 
-usage: pbsn [-h]
+usage: pbsn [-h] [-q AT_QUEUE]
+
+   AT_QUEUE    resources_available.at_queue
 EOH
 set -eu
+
+at_queue=""
 
 while (($#>0));do
 	case $1 in
 	(-h) help ;;
+	(-q) at_queue=$2; shift ;;
 	(-*) echo "unknown arg $1"; help ;;
 	esac
 	shift
@@ -18,6 +23,7 @@ done
 
 run(){
 awk \
+-v "at_queue=$at_queue" \
 '
 function printnode(node){
 	if(!(node in printed)){
@@ -45,7 +51,11 @@ function printnodelist(list){
 	ns[node][key]=$0
 }
 END{
+	total=0
 	for(node in ns){
+		if(at_queue!="" && ns[node]["resources_available.at_queue"]!=at_queue)
+			continue
+		++total
 		if(ns[node]["resources_available.validation"]=="True")
 			validation[node]=1
 		else{
@@ -63,7 +73,7 @@ END{
 				broken[node]=1
 		}
 	}
-	print "#total",length(ns)," validation",length(validation)," down",length(down)," free",length(free)," resv",length(resv)," job",length(job)," other",length(other)
+	print "#total",total," validation",length(validation)," down",length(down)," free",length(free)," resv",length(resv)," job",length(job)," other",length(other)
 	sfmt="%-16s %22s %10s %10s  %s\n"
 	printf(sfmt, "#node", "state", "broken", "validation", "comment")
 	printnodelist(broken)
