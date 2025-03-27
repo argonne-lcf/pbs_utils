@@ -1,7 +1,7 @@
 #!/bin/bash
 help(){ cat; exit; }<<'EOH'
-pbsq (PBS Qstat filter) 0.3
-Copyright (C) 2022-2023 Xiao-Yong Jin
+pbsq (PBS Qstat filter) 0.4
+Copyright (C) 2022-2025 Xiao-Yong Jin
 License MIT [https://opensource.org/licenses/MIT]
 
 usage: pbsq [-h] [-f FILTER] [-s HEADER1[,OPT]:HEADER2[,OPT]:..] [-H HEADER1:HEADER2:...]
@@ -10,7 +10,7 @@ set -eu
 
 filter=
 
-if [[ $(hostname) == polaris* ]];then
+if [[ $(hostname) =~ (aurora|polaris)* ]];then
 	sort=TimeRemaining,r:EstStart,r:State:Score,n:QueuedTime,n
 	header=JobId:User:Account:Score:WallTime:QueuedTime:EstStart:RunTime:TimeRemaining:Nodes:State:Queue:JobName:Location/Comments
 else
