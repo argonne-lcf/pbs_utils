@@ -61,7 +61,6 @@ pbsnodesOutput=$(pbsnodes -a -F json)
 list_free_nodes() {
   case "$partition" in
     lustre_scaling)
-      echo "Free nodes in lustre_scaling/run_next:"
       echo "$pbsnodesOutput" | jq -r '
         .nodes[]
         | select(
@@ -77,7 +76,6 @@ list_free_nodes() {
       '
       ;;
     intel|validation|alcf_kmd_val|alcf_daos_cn)
-      echo "Free nodes in $partition:"
       echo "$pbsnodesOutput" | jq -r --arg part "$partition" '
         .nodes[]
         | select(
@@ -93,7 +91,6 @@ list_free_nodes() {
       '
       ;;
     hpe)
-      echo "Free nodes in hpe:"
       echo "$pbsnodesOutput" | jq -r '
         .nodes[]
         | select(
@@ -105,7 +102,6 @@ list_free_nodes() {
       '
       ;;
     all)
-      echo "All free (non-broken) nodes:"
       echo "$pbsnodesOutput" | jq -r '
         .nodes[]
         | select(
