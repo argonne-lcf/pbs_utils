@@ -52,7 +52,7 @@ All headers: `JobId`, `User`, `Account`, `Score`, `WallTime`, `QueuedTime`, `Est
 Note: view the displayed table with `less -S`.
 
 ### Examples
-- Show jobs by a user: `pbsq -f username | less -S`
 - Show jobs on a rack: `pbsq -f x4305 | less -S`
 - Sort by queued time only: `pbsq -s QueuedTime,r | less -S`
 - Select columns: `pbsq -H JobId:State:TimeRemaining:Nodes`
+- Show past jobs by a user: `qstat -xfwu username | pbsq | less -S`
