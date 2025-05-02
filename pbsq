@@ -199,7 +199,8 @@ END{
 	print o
 	sort_cmd="sort"
 	for(j=1;j<=nsort;++j)
-		sort_cmd=sort_cmd" -k "sort_key[j]sort_opt[j]","sort_key[j]sort_opt[j]
+		if(j in sort_key)
+			sort_cmd=sort_cmd" -k "sort_key[j]sort_opt[j]","sort_key[j]sort_opt[j]
 	for(id in output){
 		o=""
 		for(i=1;i<=nitems;++i)
