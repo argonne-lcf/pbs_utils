@@ -94,7 +94,7 @@ function query(job,key,	r,eligible_time,walltime){
 			r=ftime(cur_time-datetime_to_epoch(job["qtime"]))
 		fi
 	}else if(key=="EstStart"){
-		if("estimated.start_time" in job && job["job_state"] != "H" && ! is_running(job))
+		if("estimated.start_time" in job && job["job_state"] != "H" && ! is_running(job) && ! is_finished(job))
 			r=ftime(datetime_to_epoch(job["estimated.start_time"])-cur_time)
 		else
 			r="n/a"
