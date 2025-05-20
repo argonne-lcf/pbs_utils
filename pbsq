@@ -70,7 +70,10 @@ function ftime(t){
 }
 function is_running(job){
 	# job["job_state"] == "R"  # somehow not reliable?
-	return job["job_state"] != "H" && "stime" in job && ! ("obitime" in job)
+	return job["job_state"] != "H" && "stime" in job && ! ("obittime" in job)
+}
+function is_finished(job){
+	return job["job_state"] != "H" && "stime" in job && "obittime" in job
 }
 function query(job,key,	r,eligible_time,walltime){
 	if(key=="JobName"){
@@ -85,7 +88,7 @@ function query(job,key,	r,eligible_time,walltime){
 		r=job["Job_Owner"]
 		sub(/@.*/, "", r)
 	}else if(key=="QueuedTime"){
-		if(is_running(job))
+		if("stime" in job)
 			r=ftime(datetime_to_epoch(job["stime"])-datetime_to_epoch(job["qtime"]))
 		else
 			r=ftime(cur_time-datetime_to_epoch(job["qtime"]))
@@ -99,6 +102,8 @@ function query(job,key,	r,eligible_time,walltime){
 	}else if(key=="RunTime"){
 		if(is_running(job))
 			r=ftime(cur_time-datetime_to_epoch(job["stime"]))
+		else if(is_finished(job))
+			r=ftime(datetime_to_epoch(job["obittime"])-datetime_to_epoch(job["stime"]))
 		else
 			r="n/a"
 	}else if(key=="TimeRemaining"){
