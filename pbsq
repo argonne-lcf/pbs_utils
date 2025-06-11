@@ -1,6 +1,6 @@
 #!/bin/bash
 help(){ cat; exit; }<<'EOH'
-pbsq (PBS Qstat filter) 0.4
+pbsq (PBS Qstat filter) 0.5
 Copyright (C) 2022-2025 Xiao-Yong Jin
 License MIT [https://opensource.org/licenses/MIT]
 
@@ -130,6 +130,10 @@ function query(job,key,	r,eligible_time,walltime){
 		eligible_time=hms_to_sec(job["eligible_time"])
 		walltime=hms_to_sec(job["Resource_List.walltime"])
 		r=job["Resource_List.base_score"] + job["Resource_List.score_boost"] + (job["Resource_List.enable_wfp"] * job["Resource_List.wfp_factor"] * (eligible_time ** 2 / min(max(walltime,21600.0),43200.0) ** 3  * job["Resource_List.project_priority"] * job["Resource_List.nodect"] / job["Resource_List.total_cpus"])) + (job["Resource_List.enable_backfill"] * min(job["Resource_List.backfill_max"], eligible_time / job["Resource_List.backfill_factor"])) + (job["Resource_List.enable_fifo"] * eligible_time / job["Resource_List.fifo_factor"])
+	}else if(key=="WorkDir"){
+		r=job["Variable_List"]
+		sub(/.*,PBS_O_WORKDIR=/, "", r)
+		sub(/,.*/, "", r)
 	}else r=job[key]
 	return r
 }

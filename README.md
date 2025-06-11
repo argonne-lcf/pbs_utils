@@ -47,7 +47,7 @@ pbsq [-h] [-f FILTER] [-s HEADER1[,OPT]:HEADER2[,OPT]:..] [-H HEADER1:HEADER2:..
 - `-s HEADER1[,OPT]:HEADER2[,OPT]:..`: Sort by headers (e.g., `TimeRemaining,r` for reverse). OPT is one or more single letter ordering options supported in sort(1). Headers not displayed are ignored.
 - `-H HEADER1:HEADER2:...`: Display selected headers (e.g., `JobId:User:State`).
 
-All headers: `JobId`, `User`, `Account`, `Score`, `WallTime`, `QueuedTime`, `EstStart`, `RunTime`, `TimeRemaining`, `Nodes`, `State`, `Queue`, `JobName`, `Location/Comments`.
+All headers: `JobId`, `User`, `Account`, `Score`, `WallTime`, `QueuedTime`, `EstStart`, `RunTime`, `TimeRemaining`, `Nodes`, `State`, `Queue`, `JobName`, `Location/Comments`, `WorkDir`.
 
 Note: view the displayed table with `less -S`.
 
