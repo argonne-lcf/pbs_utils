@@ -60,16 +60,24 @@ Note: view the displayed table with `less -S`.
 
 # Python PBS Scripts
 
+## Requirements-free Scripts
+
+### pu_qstat.py
+
+A self-contained Python program that displays PBS (Portable Batch System) job information in a formatted table with advanced filtering, sorting, and routing queue support. See [doc/README_pu_qstat.md](doc/README_pu_qstat.md) for more.
+
+## Other Python Scripts
+
 The user will need an evironment that provides a recent version of python and contains the requirements:
 * tabulate
 * pandas
 * numpy
 * chardet
 
-## `pbs/` module
+### `pbs/` module
 This module provides interfaces to running pbs commands and getting output via JSON format and is used to create the utility scripts below.
 
-## `pbs_node_summary.py`
+### `pbs_node_summary.py`
 Run this script to print a summary of current node status. For Example:
 
 ```shell
@@ -84,7 +92,7 @@ Run this script to print a summary of current node status. For Example:
 +----------------+-------+
 ```
 
-## `pbs_nodehour_summary.py`
+### `pbs_nodehour_summary.py`
 Run this script to print a summary of the node-hours queued on the local system, sorted by largest to smallest. Organized by Project, can also organize by user. For Example:
 ```shell
 +---------------------+------------+-----------+
@@ -99,7 +107,7 @@ Run this script to print a summary of the node-hours queued on the local system,
 +---------------------+------------+-----------+
 ```
 
-## `pbs_queue_summary.py`
+### `pbs_queue_summary.py`
 Run this script to print a summary of the queues and how many node-hours or jobs are on each queue. For Example:
 ```shell
 +---------------+--------------+---------------+-------------------+--------------------+--------------+---------------+
@@ -123,7 +131,7 @@ Run this script to print a summary of the queues and how many node-hours or jobs
 +---------------+--------------+---------------+-------------------+--------------------+--------------+---------------+
 ```
 
-## `pbs_top_jobs.py`
+### `pbs_top_jobs.py`
 Run this script to print a summary of the top jobs by score in the queue. There are command line flags to filter based on job parameters. For Example:
 ```shell
 +------------+-----------+-------+--------------+-----------------+------------------+---------------+-------+-----------+
