@@ -485,6 +485,87 @@ def get_award_category_display(award_category):
         return '--'
     return AWARD_CATEGORY_MAP.get(award_category, award_category)
 
+def detect_value_type(value):
+    """
+    Detect the type of a value for intelligent sorting.
+    
+    Args:
+        value: The value to analyze
+        
+    Returns:
+        str: Type identifier ('time', 'datetime', 'numeric', 'string')
+    """
+    if value is None or value == '--' or value == '':
+        return 'empty'
+    
+    str_value = str(value).strip()
+    
+    # Check for HH:MM:SS time format
+    if re.match(r'^\d+:\d{2}:\d{2}$', str_value):
+        return 'time'
+    
+    # Check for PBS datetime formats
+    for fmt in PBS_TIME_FORMATS:
+        try:
+            parse_pbs_time(str_value)
+            return 'datetime'
+        except (ValueError, TypeError):
+            continue
+    
+    # Check for MM/DD HH:MM format (from format_submitted_time)
+    if re.match(r'^\d{2}/\d{2}\s+\d{2}:\d{2}$', str_value):
+        return 'submitted_time'
+    
+    # Check for numeric (int or float)
+    try:
+        float(str_value)
+        return 'numeric'
+    except (ValueError, TypeError):
+        pass
+    
+    return 'string'
+
+def convert_value_for_sorting(value, value_type=None):
+    """
+    Convert a value to a sortable form based on its detected type.
+    
+    Args:
+        value: The value to convert
+        value_type (str, optional): Pre-detected type, or None to auto-detect
+        
+    Returns:
+        Comparable value for sorting
+    """
+    if value_type is None:
+        value_type = detect_value_type(value)
+    
+    if value_type == 'empty':
+        # Return minimum values so empty fields sort first (or adjust as needed)
+        return (0, 0)  # Tuple to ensure consistent comparison type
+    
+    str_value = str(value).strip()
+    
+    try:
+        if value_type == 'time':
+            # Convert HH:MM:SS to seconds
+            return (1, string_time_to_seconds(str_value))
+        elif value_type == 'datetime':
+            # Parse as PBS datetime
+            dt = parse_pbs_time(str_value)
+            return (1, dt.timestamp())
+        elif value_type == 'submitted_time':
+            # Parse MM/DD HH:MM format
+            current_year = datetime.now().year
+            dt = datetime.strptime(f"{current_year} {str_value}", "%Y %m/%d %H:%M")
+            return (1, dt.timestamp())
+        elif value_type == 'numeric':
+            return (1, float(str_value))
+        else:  # 'string'
+            return (1, str_value.lower())
+    except (ValueError, TypeError, AttributeError):
+        # If conversion fails, treat as empty
+        return (0, 0)
+
 def extract_extra_column_value(job, column_spec):
     """
     Extract value for an extra column based on column specification.
@@ -663,8 +744,8 @@ def print_jobs(job_data: dict, server_data: dict = None,
                 extra_column_names.append(display_name)
         
         if sort_by in extra_column_names:
-            # Sort by extra column
-            job_list.sort(key=lambda x: str(x.get(sort_by, '')).lower(), reverse=reverse_order)
+            # Sort by extra column using intelligent type detection
+            job_list.sort(key=lambda x: convert_value_for_sorting(x.get(sort_by, '--')), reverse=reverse_order)
         elif sort_by == 'score':
             job_list.sort(key=lambda x: x['score'], reverse=reverse_order)
         elif sort_by == 'state':
@@ -680,37 +761,14 @@ def print_jobs(job_data: dict, server_data: dict = None,
         elif sort_by == 'jobid':
             job_list.sort(key=lambda x: int(x['jobid']), reverse=reverse_order)
         elif sort_by == 'walltime':
-            # Sort by walltime in seconds for proper ordering
-            def walltime_to_seconds(wt):
-                if wt == '--':
-                    return 0
-                try:
-                    return string_time_to_seconds(wt)
-                except:
-                    return 0
-            job_list.sort(key=lambda x: walltime_to_seconds(x['walltime']), reverse=reverse_order)
+            # Use intelligent type-aware sorting
+            job_list.sort(key=lambda x: convert_value_for_sorting(x['walltime']), reverse=reverse_order)
         elif sort_by == 'runtime':
-            # Sort by runtime in seconds for proper ordering
-            def runtime_to_seconds(rt):
-                if rt == '--':
-                    return 0
-                try:
-                    return string_time_to_seconds(rt)
-                except:
-                    return 0
-            job_list.sort(key=lambda x: runtime_to_seconds(x['runtime']), reverse=reverse_order)
+            # Use intelligent type-aware sorting
+            job_list.sort(key=lambda x: convert_value_for_sorting(x['runtime']), reverse=reverse_order)
         elif sort_by == 'submitted':
-            # Sort by submitted time (qtime) for proper ordering
-            def submitted_to_datetime(submitted_str):
-                if submitted_str == '--':
-                    return datetime.min
-                try:
-                    # Parse the MM/DD HH:MM format back to datetime
-                    current_year = datetime.now().year
-                    return datetime.strptime(f"{current_year} {submitted_str}", "%Y %m/%d %H:%M")
-                except:
-                    return datetime.min
-            job_list.sort(key=lambda x: submitted_to_datetime(x['submitted']), reverse=reverse_order)
+            # Use intelligent type-aware sorting
+            job_list.sort(key=lambda x: convert_value_for_sorting(x['submitted']), reverse=reverse_order)
         else:
             logger.warning(f"Unknown sort field: {sort_by}. Using default order.")
     
@@ -803,7 +861,7 @@ Examples:
     )
     
     parser.add_argument('--sort', type=str,
-                       help='Sort by field (default: no sorting). Can be any standard field or extra column name.')
+                       help='Sort by field (default: no sorting). Can be any standard field or extra column name. Sorting is type-aware and handles dates, times (HH:MM:SS), and numeric values automatically.')
     parser.add_argument('--reverse', action='store_true',
                        help='Sort in descending order (default: ascending)')
     parser.add_argument('--state', type=str, default='RQH',
