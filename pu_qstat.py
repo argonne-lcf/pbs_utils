@@ -371,18 +371,30 @@ def format_time_display(time_str):
         return '--'
     return time_str
 
-def format_submitted_time(qtime_str):
-    """Format submitted time (qtime) for display."""
-    if not qtime_str:
+def format_datetime_compact(datetime_str):
+    """
+    Format any datetime string in compact MM/DD HH:MM format.
+    
+    Args:
+        datetime_str (str): A datetime string in PBS format or other recognizable format
+        
+    Returns:
+        str: Formatted datetime as MM/DD HH:MM, or '--' if invalid
+    """
+    if not datetime_str or datetime_str == '--':
         return '--'
     try:
         # Parse the PBS time format without dateutil
-        submitted_time = parse_pbs_time(qtime_str)
-        # Format as MM/DD HH:MM for compact display
-        return submitted_time.strftime('%m/%d %H:%M')
+        dt = parse_pbs_time(datetime_str)
+        # Format as MM/DD HH:MM for compact display (24-hour format)
+        return dt.strftime('%m/%d %H:%M')
     except Exception:
         # If parsing fails, return the original string truncated
-        return qtime_str[:15] if len(qtime_str) > 15 else qtime_str
+        return datetime_str[:15] if len(datetime_str) > 15 else datetime_str
+
+def format_submitted_time(qtime_str):
+    """Format submitted time (qtime) for display."""
+    return format_datetime_compact(qtime_str)
 
 def calculate_elapsed_runtime(job):
     """
@@ -525,46 +537,56 @@ def detect_value_type(value):
     
     return 'string'
 
-def convert_value_for_sorting(value, value_type=None):
+def convert_value_for_sorting(value, value_type=None, reverse=False):
     """
     Convert a value to a sortable form based on its detected type.
+    
+    Rows with empty/missing values are automatically sorted to the end,
+    regardless of sort direction.
     
     Args:
         value: The value to convert
         value_type (str, optional): Pre-detected type, or None to auto-detect
+        reverse (bool): Whether the sort is in reverse order
         
     Returns:
-        Comparable value for sorting
+        Comparable value for sorting (tuple where first element indicates validity)
     """
     if value_type is None:
         value_type = detect_value_type(value)
     
+    # Determine the validity flag based on sort direction
+    # For ascending (reverse=False): valid=0, empty=1 (empty sorts last)
+    # For descending (reverse=True): valid=1, empty=0 (when reversed, empty still sorts last)
+    valid_flag = 1 if reverse else 0
+    empty_flag = 0 if reverse else 1
+    
     if value_type == 'empty':
-        # Return minimum values so empty fields sort first (or adjust as needed)
-        return (0, 0)  # Tuple to ensure consistent comparison type
+        # Return appropriate flag so empty fields always sort last
+        return (empty_flag, 0)
     
     str_value = str(value).strip()
     
     try:
         if value_type == 'time':
             # Convert HH:MM:SS to seconds
-            return (1, string_time_to_seconds(str_value))
+            return (valid_flag, string_time_to_seconds(str_value))
         elif value_type == 'datetime':
             # Parse as PBS datetime
             dt = parse_pbs_time(str_value)
-            return (1, dt.timestamp())
+            return (valid_flag, dt.timestamp())
         elif value_type == 'submitted_time':
             # Parse MM/DD HH:MM format
             current_year = datetime.now().year
             dt = datetime.strptime(f"{current_year} {str_value}", "%Y %m/%d %H:%M")
-            return (1, dt.timestamp())
+            return (valid_flag, dt.timestamp())
         elif value_type == 'numeric':
-            return (1, float(str_value))
+            return (valid_flag, float(str_value))
         else:  # 'string'
-            return (1, str_value.lower())
+            return (valid_flag, str_value.lower())
     except (ValueError, TypeError, AttributeError):
-        # If conversion fails, treat as empty
-        return (0, 0)
+        # If conversion fails, treat as empty (sort to end)
+        return (empty_flag, 0)
 
 def extract_extra_column_value(job, column_spec):
     """
@@ -594,9 +616,23 @@ def extract_extra_column_value(job, column_spec):
             value = '--'
             break
     
+    # If final value is still a dict, it means the path was incomplete
+    # Convert to a string representation or mark as invalid
+    if isinstance(value, dict):
+        # Check if it's a non-empty dict that should have been navigated further
+        if value and value != {}:
+            logger.warning(f"Column '{column_spec}': path '{field_path}' points to a dict with keys: {list(value.keys())[:5]}. Did you mean to access a sub-field?")
+        value = '--'
+    
     # Apply special transformations
     if field_path == 'Resource_List.award_category':
         value = get_award_category_display(value)
+    
+    # Auto-format datetime values in compact format
+    if value and value != '--':
+        value_type = detect_value_type(value)
+        if value_type == 'datetime':
+            value = format_datetime_compact(value)
     
     return display_name, value
 
@@ -745,7 +781,7 @@ def print_jobs(job_data: dict, server_data: dict = None,
         
         if sort_by in extra_column_names:
             # Sort by extra column using intelligent type detection
-            job_list.sort(key=lambda x: convert_value_for_sorting(x.get(sort_by, '--')), reverse=reverse_order)
+            job_list.sort(key=lambda x: convert_value_for_sorting(x.get(sort_by, '--'), reverse=reverse_order), reverse=reverse_order)
         elif sort_by == 'score':
             job_list.sort(key=lambda x: x['score'], reverse=reverse_order)
         elif sort_by == 'state':
@@ -762,13 +798,13 @@ def print_jobs(job_data: dict, server_data: dict = None,
             job_list.sort(key=lambda x: int(x['jobid']), reverse=reverse_order)
         elif sort_by == 'walltime':
             # Use intelligent type-aware sorting
-            job_list.sort(key=lambda x: convert_value_for_sorting(x['walltime']), reverse=reverse_order)
+            job_list.sort(key=lambda x: convert_value_for_sorting(x['walltime'], reverse=reverse_order), reverse=reverse_order)
         elif sort_by == 'runtime':
             # Use intelligent type-aware sorting
-            job_list.sort(key=lambda x: convert_value_for_sorting(x['runtime']), reverse=reverse_order)
+            job_list.sort(key=lambda x: convert_value_for_sorting(x['runtime'], reverse=reverse_order), reverse=reverse_order)
         elif sort_by == 'submitted':
             # Use intelligent type-aware sorting
-            job_list.sort(key=lambda x: convert_value_for_sorting(x['submitted']), reverse=reverse_order)
+            job_list.sort(key=lambda x: convert_value_for_sorting(x['submitted'], reverse=reverse_order), reverse=reverse_order)
         else:
             logger.warning(f"Unknown sort field: {sort_by}. Using default order.")
     
@@ -792,13 +828,13 @@ def print_jobs(job_data: dict, server_data: dict = None,
                 display_name = column_spec.split('.')[-1]
             extra_column_names.append(display_name)
     
-    # Project column is always last and wide
-    all_columns = base_columns + extra_column_names + ['Project']
+    # Column order: base columns, Project (fixed width), then extra columns at the far right
+    all_columns = base_columns + ['Project'] + extra_column_names
     
     # Build format string
     format_parts = []
     format_parts.append("{jobid:<10s}")
-    format_parts.append("{user:>20s}")
+    format_parts.append("{user:>14s}")
     format_parts.append("{state:>10s}")
     format_parts.append("{queue:>20s}")
     format_parts.append("{nodes:>10d}")
@@ -806,15 +842,15 @@ def print_jobs(job_data: dict, server_data: dict = None,
     format_parts.append("{walltime:>10s}")
     format_parts.append("{runtime:>10s}")
     format_parts.append("{submitted:>12s}")
+    format_parts.append("{project:>24s}")  # Fixed width project column
     for col_name in extra_column_names:
-        format_parts.append(f"{{{col_name}:>10s}}")
-    format_parts.append("{project:>24s}")
+        format_parts.append(f"{{{col_name}:>15s}}")  # Extra columns get slightly wider width
     format_string = " : ".join(format_parts)
     
     # Build header string
     header_parts = []
     header_parts.append(f"{'Job ID':<10s}")
-    header_parts.append(f"{'User':>20s}")
+    header_parts.append(f"{'User':>14s}")
     header_parts.append(f"{'State':>10s}")
     header_parts.append(f"{'Queue':>20s}")
     header_parts.append(f"{'Nodes':>10s}")
@@ -822,9 +858,9 @@ def print_jobs(job_data: dict, server_data: dict = None,
     header_parts.append(f"{'Walltime':>10s}")
     header_parts.append(f"{'Runtime':>10s}")
     header_parts.append(f"{'Submitted':>12s}")
+    header_parts.append(f"{'Project':>24s}")  # Fixed width project column
     for col_name in extra_column_names:
-        header_parts.append(f"{col_name:>10s}")
-    header_parts.append(f"{'Project':>24s}")
+        header_parts.append(f"{col_name:>15s}")  # Extra columns get slightly wider width
     header_string = " : ".join(header_parts)
     
     logger.info(f"Found {len(job_list)} jobs:")
@@ -855,8 +891,10 @@ Examples:
   python pbs_jobs_viewer.py --sort runtime --state R  # Sort running jobs by elapsed runtime
   python pbs_jobs_viewer.py --sort submitted --reverse # Sort by submission time (newest first)
   python pbs_jobs_viewer.py --jobid 12345,67890       # Show only jobs with IDs 12345 and 67890
-  python pbs_jobs_viewer.py --extraCols Resource_List.award_category:ProjType  # Add project type column
-  python pbs_jobs_viewer.py --extraCols Resource_List.award_category:ProjType,Variable_List.PBS_O_HOST  # Add multiple columns
+  python pbs_jobs_viewer.py --extraCols estimated.start_time  # Add estimated start time column (auto-formatted as MM/DD HH:MM)
+  python pbs_jobs_viewer.py --extraCols stime:Start  # Add job start time (datetimes auto-formatted compactly)
+  python pbs_jobs_viewer.py --extraCols Resource_List.award_category:ProjType  # Add project type column with custom name
+  python pbs_jobs_viewer.py --extraCols estimated.start_time:ETA,Resource_List.award_category:Type  # Add multiple columns
         """
     )
     
@@ -877,7 +915,7 @@ Examples:
     parser.add_argument('--limit', type=int,
                        help='Limit output to N jobs')
     parser.add_argument('--extraCols', type=str,
-                       help='Comma-separated list of extra columns to include. Format: field.path or field.path:display_name. Example: Resource_List.award_category:ProjType,Variable_List.PBS_O_HOST')
+                       help='Comma-separated list of extra columns to include. Format: field.path (use dots for nested fields) or field.path:DisplayName (colon for custom display name). Datetime values are automatically formatted as MM/DD HH:MM. Example: estimated.start_time or stime:Start')
     
     return parser.parse_args()
 
