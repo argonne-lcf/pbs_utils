@@ -117,6 +117,15 @@ for pid in "${pids[@]}"; do wait "${pid}"; done
 echo "Destination parents created."
 echo
 
+# ---- Set `get_cpu_affinity` location ----
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ -x "$SCRIPT_DIR/get_cpu_affinity" ]]; then
+    GET_CPU_AFFINITY="$SCRIPT_DIR/get_cpu_affinity"
+else
+    GET_CPU_AFFINITY="get_cpu_affinity"
+fi
+
 # ---- Run dsync on each node ----
 module load mpifileutils
 # NOTE: This is still "one job per node" (replication per node),
@@ -124,7 +133,7 @@ module load mpifileutils
 echo "Copying with dsync (${RANKS_PER_NODE} ranks per node)..."
 pids=()
 for node in "${NODES[@]}"; do
-  mpiexec -n "${RANKS_PER_NODE}" $(./get_cpu_affinity ${RANKS_PER_NODE}) ${MPIEXEC_HOST_OPT} "${node}" \
+  mpiexec -n "${RANKS_PER_NODE}" $(${GET_CPU_AFFINITY} ${RANKS_PER_NODE}) ${MPIEXEC_HOST_OPT} "${node}" \
     dsync -v "${SRC_DIR}" "${DEST_DIR}" \
     >"dsync.${node}.log" 2>&1 &
   pids+=("$!")
