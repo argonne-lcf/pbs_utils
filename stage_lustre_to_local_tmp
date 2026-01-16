@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# stage_lustre_to_local_tmp
+#
+# Replicates SRC_DIR to /tmp on EACH allocated node using dsync + mpiexec.
+# You can choose how many MPI ranks per node to run dsync with.
+#
+# Usage:
+#   ./stage_lustre_to_local_tmp -s /lustre/path/mydir
+#   ./stage_lustre_to_local_tmp -s /lustre/path/mydir -n my_local_name
+#   ./stage_lustre_to_local_tmp -s /lustre/path/mydir -r 4
+#
+# Result on each node:
+#   /tmp/$USER/<name>  (default name is basename of SRC_DIR)
+
+SRC_DIR=""
+NAME=""
+RANKS_PER_NODE=1
+
+usage() {
+  cat >&2 <<EOF
+Usage: $0 -s SRC_DIR [-n DEST_NAME] [-r RANKS_PER_NODE]
+
+  -s  Source directory (on Lustre)
+  -n  Destination name under /tmp/\$USER (default: basename of SRC_DIR)
+  -r  MPI ranks per node for dsync (default: 1)
+
+Example:
+  $0 -s /lustre/project/data -n data_local -r 8
+EOF
+  exit 2
+}
+
+while getopts ":s:n:r:h" opt; do
+  case "${opt}" in
+    s) SRC_DIR="${OPTARG}" ;;
+    n) NAME="${OPTARG}" ;;
+    r) RANKS_PER_NODE="${OPTARG}" ;;
+    h) usage ;;
+    \?) echo "Unknown option: -${OPTARG}" >&2; usage ;;
+    :)  echo "Missing argument for -${OPTARG}" >&2; usage ;;
+  esac
+done
+
+if [[ -z "${SRC_DIR}" ]]; then
+  echo "ERROR: -s SRC_DIR is required" >&2
+  usage
+fi
+
+if [[ ! -d "${SRC_DIR}" ]]; then
+  echo "ERROR: SRC_DIR is not a directory: ${SRC_DIR}" >&2
+  exit 1
+fi
+
+if ! [[ "${RANKS_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${RANKS_PER_NODE}" -lt 1 ]]; then
+  echo "ERROR: RANKS_PER_NODE must be a positive integer (got: ${RANKS_PER_NODE})" >&2
+  exit 1
+fi
+
+if [[ -z "${NAME}" ]]; then
+  NAME="$(basename "${SRC_DIR}")"
+fi
+
+DEST_PARENT="/tmp/${USER}"
+DEST_DIR="${DEST_PARENT}/${NAME}"
+
+# ---- Get node list from common schedulers (SLURM, PBS) ----
+get_nodes() {
+  if [[ -n "${SLURM_NODELIST:-}" ]]; then
+    scontrol show hostnames "${SLURM_NODELIST}"
+  elif [[ -n "${PBS_NODEFILE:-}" && -f "${PBS_NODEFILE:-}" ]]; then
+    sort -u "${PBS_NODEFILE}"
+  else
+    echo "ERROR: Could not determine allocated nodes (SLURM_NODELIST or PBS_NODEFILE not set)." >&2
+    exit 1
+  fi
+}
+
+mapfile -t NODES < <(get_nodes)
+
+if [[ "${#NODES[@]}" -eq 0 ]]; then
+  echo "ERROR: Node list is empty." >&2
+  exit 1
+fi
+
+# ---- Detect mpiexec host option flavor ----
+MPIEXEC_HOST_OPT=""
+if mpiexec --help 2>&1 | grep -q -- '--host'; then
+  MPIEXEC_HOST_OPT="--host"
+elif mpiexec --help 2>&1 | grep -q -- '-hosts'; then
+  MPIEXEC_HOST_OPT="-hosts"
+elif mpiexec --help 2>&1 | grep -q -- '-host'; then
+  MPIEXEC_HOST_OPT="-host"
+else
+  echo "ERROR: Couldn't detect a usable mpiexec host option (--host/-host/-hosts)." >&2
+  echo "Hint: edit MPIEXEC_HOST_OPT manually for your MPI implementation." >&2
+  exit 1
+fi
+
+echo "Source: ${SRC_DIR}"
+echo "Dest (per node): ${DEST_DIR}"
+echo "Ranks per node (dsync): ${RANKS_PER_NODE}"
+echo "Nodes (${#NODES[@]}): ${NODES[*]}"
+echo "Using mpiexec host option: ${MPIEXEC_HOST_OPT}"
+echo
+
+# ---- Ensure destination parent exists on each node (local /tmp) ----
+echo "Creating ${DEST_PARENT} on each node..."
+pids=()
+for node in "${NODES[@]}"; do
+  mpiexec -n 1 ${MPIEXEC_HOST_OPT} "${node}" mkdir -p "${DEST_PARENT}" \
+    >"mkdir.${node}.log" 2>&1 &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "${pid}"; done
+echo "Destination parents created."
+echo
+
+# ---- Run dsync on each node ----
+module load mpifileutils
+# NOTE: This is still "one job per node" (replication per node),
+# but each job uses RANKS_PER_NODE MPI ranks on that node.
+echo "Copying with dsync (${RANKS_PER_NODE} ranks per node)..."
+pids=()
+for node in "${NODES[@]}"; do
+  mpiexec -n "${RANKS_PER_NODE}" $(./get_cpu_affinity ${RANKS_PER_NODE}) ${MPIEXEC_HOST_OPT} "${node}" \
+    dsync -v "${SRC_DIR}" "${DEST_DIR}" \
+    >"dsync.${node}.log" 2>&1 &
+  pids+=("$!")
+done
+
+fail=0
+for i in "${!pids[@]}"; do
+  pid="${pids[$i]}"
+  node="${NODES[$i]}"
+  if ! wait "${pid}"; then
+    echo "ERROR: dsync failed on ${node}. See dsync.${node}.log" >&2
+    fail=1
+  else
+    echo "OK: ${node}"
+  fi
+done
+
+if [[ "${fail}" -ne 0 ]]; then
+  echo "One or more nodes failed. Check dsync.<node>.log files." >&2
+  exit 1
+fi
+
+echo
+echo "All nodes now have: ${DEST_DIR}"
+
