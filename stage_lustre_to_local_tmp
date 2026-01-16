@@ -5,45 +5,58 @@ set -euo pipefail
 #
 # Replicates SRC_DIR to /tmp on EACH allocated node using dsync + mpiexec.
 # You can choose how many MPI ranks per node to run dsync with.
-# Logs are written on the *launcher node* under /tmp in a per-run logs directory,
-# then archived+compressed and copied into the current working directory.
+#
+# Logging (optional):
+#   Logs are written on the *launcher node* under /tmp in a per-run logs
+#   directory, then archived+compressed into the current working directory.
+#
+#   Enable logging with: -L
 #
 # Usage:
 #   ./stage_lustre_to_local_tmp -s /lustre/path/mydir
 #   ./stage_lustre_to_local_tmp -s /lustre/path/mydir -n my_local_name
 #   ./stage_lustre_to_local_tmp -s /lustre/path/mydir -r 4
+#   ./stage_lustre_to_local_tmp -s /lustre/path/mydir -L
 #
 # Result on each node:
 #   /tmp/<name>  (default name is basename of SRC_DIR)
 #
-# Logs on launcher node:
+# Logs on launcher node (if logging enabled):
 #   /tmp/<name>_logs_<timestamp>/
-# Archive in $PWD:
+# Archive in $PWD (if logging enabled):
 #   <name>_logs_<timestamp>.tar.gz
 
 SRC_DIR=""
 NAME=""
 RANKS_PER_NODE=1
 
+LOGGING=0   # 1=on, 0=off
+LOGS_DIR=""
+LOGS_BASE=""
+ARCHIVE=""
+
 usage() {
   cat >&2 <<EOF
-Usage: $0 -s SRC_DIR [-n DEST_NAME] [-r RANKS_PER_NODE]
+Usage: $0 -s SRC_DIR [-n DEST_NAME] [-r RANKS_PER_NODE] [-L]
 
   -s  Source directory (on Lustre)
   -n  Destination name under /tmp (default: basename of SRC_DIR)
   -r  MPI ranks per node for dsync (default: 1)
+  -L  Enable logging (archive of per-node log files)
 
 Example:
   $0 -s /lustre/project/data -n data_local -r 8
+  $0 -s /lustre/project/data -L
 EOF
   exit 2
 }
 
-while getopts ":s:n:r:h" opt; do
+while getopts ":s:n:r:Lh" opt; do
   case "${opt}" in
     s) SRC_DIR="${OPTARG}" ;;
     n) NAME="${OPTARG}" ;;
     r) RANKS_PER_NODE="${OPTARG}" ;;
+    L) LOGGING=1 ;;
     h) usage ;;
     \?) echo "Unknown option: -${OPTARG}" >&2; usage ;;
     :)  echo "Missing argument for -${OPTARG}" >&2; usage ;;
@@ -73,11 +86,13 @@ DEST_PARENT="/tmp"
 DEST_DIR="${DEST_PARENT}/${NAME}"
 
 # ---- Logs directory (launcher node /tmp) ----
-RUN_TS="$(date +%Y%m%d_%H%M%S)"
-LOGS_DIR="/tmp/${NAME}_logs_${RUN_TS}"
-LOGS_BASE="$(basename "${LOGS_DIR}")"
-ARCHIVE="${PWD}/${LOGS_BASE}.tar.gz"
-mkdir -p "${LOGS_DIR}"
+if [[ "${LOGGING}" -eq 1 ]]; then
+  RUN_TS="$(date +%Y%m%d_%H%M%S)"
+  LOGS_DIR="/tmp/${NAME}_logs_${RUN_TS}"
+  LOGS_BASE="$(basename "${LOGS_DIR}")"
+  ARCHIVE="${PWD}/${LOGS_BASE}.tar.gz"
+  mkdir -p "${LOGS_DIR}"
+fi
 
 # ---- Get node list from common schedulers (SLURM, PBS) ----
 get_nodes() {
@@ -115,7 +130,11 @@ fi
 echo "Source:                    ${SRC_DIR}"
 echo "Dest (per node):           ${DEST_DIR}"
 echo "Ranks per node (dsync):    ${RANKS_PER_NODE}"
-echo "Logs (launcher /tmp):      ${LOGS_DIR}"
+if [[ "${LOGGING}" -eq 1 ]]; then
+  echo "Logs (launcher /tmp):      ${LOGS_DIR}"
+else
+  echo "Logs (launcher /tmp):    disabled"
+fi
 echo "Nodes (${#NODES[@]}):      ${NODES[*]}"
 echo "Using mpiexec host option: ${MPIEXEC_HOST_OPT}"
 echo
@@ -128,12 +147,25 @@ else
   GET_CPU_BIND_AURORA="get_cpu_bind_aurora"
 fi
 
+# Helper: run a command in background with optional log capture.
+# Usage: run_bg <node> <stage> <command...>
+run_bg() {
+  local node="$1"; shift
+  local stage="$1"; shift
+
+  if [[ "${LOGGING}" -eq 1 ]]; then
+    # shellcheck disable=SC2090
+    "$@" >"${LOGS_DIR}/${stage}.${node}.log" 2>&1 &
+  else
+    "$@" &
+  fi
+}
+
 # ---- Ensure destination parent exists on each node (local /tmp) ----
 echo "Creating ${DEST_PARENT} on each node..."
 pids=()
 for node in "${NODES[@]}"; do
-  mpiexec -n 1 ${MPIEXEC_HOST_OPT} "${node}" mkdir -p "${DEST_PARENT}" \
-    >"${LOGS_DIR}/mkdir.${node}.log" 2>&1 &
+  run_bg "${node}" "mkdir" mpiexec -n 1 ${MPIEXEC_HOST_OPT} "${node}" mkdir -p "${DEST_PARENT}"
   pids+=("$!")
 done
 
@@ -142,7 +174,11 @@ for i in "${!pids[@]}"; do
   pid="${pids[$i]}"
   node="${NODES[$i]}"
   if ! wait "${pid}"; then
-    echo "ERROR: mkdir failed on ${node}. See ${LOGS_DIR}/mkdir.${node}.log" >&2
+    if [[ "${LOGGING}" -eq 1 ]]; then
+      echo "ERROR: mkdir failed on ${node}. See ${LOGS_DIR}/mkdir.${node}.log" >&2
+    else
+      echo "ERROR: mkdir failed on ${node}." >&2
+    fi
     mkdir_fail=1
   else
     echo "OK: mkdir ${node}"
@@ -155,9 +191,9 @@ module load mpifileutils
 echo "Copying with dsync (${RANKS_PER_NODE} ranks per node)..."
 pids=()
 for node in "${NODES[@]}"; do
-  mpiexec -n "${RANKS_PER_NODE}" $(${GET_CPU_BIND_AURORA} ${RANKS_PER_NODE}) ${MPIEXEC_HOST_OPT} "${node}" \
-    dsync -v "${SRC_DIR}" "${DEST_DIR}" \
-    >"${LOGS_DIR}/dsync.${node}.log" 2>&1 &
+  run_bg "${node}" "dsync" \
+    mpiexec -n "${RANKS_PER_NODE}" $(${GET_CPU_BIND_AURORA} ${RANKS_PER_NODE}) ${MPIEXEC_HOST_OPT} "${node}" \
+      dsync -v "${SRC_DIR}" "${DEST_DIR}"
   pids+=("$!")
 done
 
@@ -166,7 +202,11 @@ for i in "${!pids[@]}"; do
   pid="${pids[$i]}"
   node="${NODES[$i]}"
   if ! wait "${pid}"; then
-    echo "ERROR: dsync failed on ${node}. See ${LOGS_DIR}/dsync.${node}.log" >&2
+    if [[ "${LOGGING}" -eq 1 ]]; then
+      echo "ERROR: dsync failed on ${node}. See ${LOGS_DIR}/dsync.${node}.log" >&2
+    else
+      echo "ERROR: dsync failed on ${node}." >&2
+    fi
     dsync_fail=1
   else
     echo "OK: dsync ${node}"
@@ -174,14 +214,20 @@ for i in "${!pids[@]}"; do
 done
 
 # ---- Archive and compress logs to current working directory ----
-echo
-echo "Archiving logs to: ${ARCHIVE}"
-tar -C /tmp -czf "${ARCHIVE}" "${LOGS_BASE}"
-echo "Logs archived: ${ARCHIVE}"
+if [[ "${LOGGING}" -eq 1 ]]; then
+  echo
+  echo "Archiving logs to: ${ARCHIVE}"
+  tar -C /tmp -czf "${ARCHIVE}" "${LOGS_BASE}"
+  echo "Logs archived: ${ARCHIVE}"
+fi
 
 # ---- Final status ----
 if [[ "${mkdir_fail}" -ne 0 || "${dsync_fail}" -ne 0 ]]; then
-  echo "One or more nodes failed. Check logs in ${ARCHIVE}" >&2
+  if [[ "${LOGGING}" -eq 1 ]]; then
+    echo "One or more nodes failed. Check logs in ${ARCHIVE}" >&2
+  else
+    echo "One or more nodes failed." >&2
+  fi
   exit 1
 fi
 
