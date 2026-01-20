@@ -3,7 +3,7 @@ set -euo pipefail
 
 # stage_lustre_to_local_tmp
 #
-# Replicates SRC_DIR to /tmp on EACH allocated node using dsync + mpiexec.
+# Replicates SRC (directory OR file) to /tmp on EACH allocated node using dsync + mpiexec.
 # You can choose how many MPI ranks per node to run dsync with.
 #
 # Logging (optional):
@@ -14,19 +14,16 @@ set -euo pipefail
 #
 # Usage:
 #   ./stage_lustre_to_local_tmp -s /lustre/path/mydir
-#   ./stage_lustre_to_local_tmp -s /lustre/path/mydir -n my_local_name
+#   ./stage_lustre_to_local_tmp -s /lustre/path/myfile.bin
+#   ./stage_lustre_to_local_tmp -s /lustre/path/myfile.bin -n local_name.bin
 #   ./stage_lustre_to_local_tmp -s /lustre/path/mydir -r 4
 #   ./stage_lustre_to_local_tmp -s /lustre/path/mydir -L
 #
 # Result on each node:
-#   /tmp/<name>  (default name is basename of SRC_DIR)
-#
-# Logs on launcher node (if logging enabled):
-#   /tmp/<name>_logs_<timestamp>/
-# Archive in $PWD (if logging enabled):
-#   <name>_logs_<timestamp>.tar.gz
+#   If SRC is a directory: /tmp/<name>/...
+#   If SRC is a file:      /tmp/<name>
 
-SRC_DIR=""
+SRC=""
 NAME=""
 RANKS_PER_NODE=1
 
@@ -37,23 +34,26 @@ ARCHIVE=""
 
 usage() {
   cat >&2 <<EOF
-Usage: $0 -s SRC_DIR [-n DEST_NAME] [-r RANKS_PER_NODE] [-L]
+Usage: $0 -s SRC [-n DEST_NAME] [-r RANKS_PER_NODE] [-L]
 
-  -s  Source directory (on Lustre)
-  -n  Destination name under /tmp (default: basename of SRC_DIR)
+  -s  Source path on Lustre (directory OR file)
+  -n  Destination name under /tmp
+        * dir src: default basename(SRC)
+        * file src: default basename(SRC)
   -r  MPI ranks per node for dsync (default: 1)
   -L  Enable logging (archive of per-node log files)
 
-Example:
-  $0 -s /lustre/project/data -n data_local -r 8
-  $0 -s /lustre/project/data -L
+Examples:
+  $0 -s /lustre/project/data_dir -n data_local -r 8
+  $0 -s /lustre/project/file.dat -n file_local.dat -r 4
+  $0 -s /lustre/project/data_dir -L
 EOF
   exit 2
 }
 
 while getopts ":s:n:r:Lh" opt; do
   case "${opt}" in
-    s) SRC_DIR="${OPTARG}" ;;
+    s) SRC="${OPTARG}" ;;
     n) NAME="${OPTARG}" ;;
     r) RANKS_PER_NODE="${OPTARG}" ;;
     L) LOGGING=1 ;;
@@ -63,13 +63,24 @@ while getopts ":s:n:r:Lh" opt; do
   esac
 done
 
-if [[ -z "${SRC_DIR}" ]]; then
-  echo "ERROR: -s SRC_DIR is required" >&2
+if [[ -z "${SRC}" ]]; then
+  echo "ERROR: -s SRC is required" >&2
   usage
 fi
 
-if [[ ! -d "${SRC_DIR}" ]]; then
-  echo "ERROR: SRC_DIR is not a directory: ${SRC_DIR}" >&2
+if [[ ! -e "${SRC}" ]]; then
+  echo "ERROR: SRC does not exist: ${SRC}" >&2
+  exit 1
+fi
+
+SRC_IS_DIR=0
+SRC_IS_FILE=0
+if [[ -d "${SRC}" ]]; then
+  SRC_IS_DIR=1
+elif [[ -f "${SRC}" ]]; then
+  SRC_IS_FILE=1
+else
+  echo "ERROR: SRC must be a regular file or directory: ${SRC}" >&2
   exit 1
 fi
 
@@ -79,11 +90,11 @@ if ! [[ "${RANKS_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${RANKS_PER_NODE}" -lt 1 ]]; t
 fi
 
 if [[ -z "${NAME}" ]]; then
-  NAME="$(basename "${SRC_DIR}")"
+  NAME="$(basename "${SRC}")"
 fi
 
 DEST_PARENT="/tmp"
-DEST_DIR="${DEST_PARENT}/${NAME}"
+DEST_PATH="${DEST_PARENT}/${NAME}"   # If SRC is dir => destination dir; if SRC is file => destination file path
 
 # ---- Logs directory (launcher node /tmp) ----
 if [[ "${LOGGING}" -eq 1 ]]; then
@@ -127,8 +138,13 @@ else
   exit 1
 fi
 
-echo "Source:                    ${SRC_DIR}"
-echo "Dest (per node):           ${DEST_DIR}"
+echo "Source:                    ${SRC}"
+if [[ "${SRC_IS_DIR}" -eq 1 ]]; then
+  echo "Source type:               directory"
+else
+  echo "Source type:               file"
+fi
+echo "Dest (per node):           ${DEST_PATH}"
 echo "Ranks per node (dsync):    ${RANKS_PER_NODE}"
 if [[ "${LOGGING}" -eq 1 ]]; then
   echo "Logs (launcher /tmp):      ${LOGS_DIR}"
@@ -154,7 +170,6 @@ run_bg() {
   local stage="$1"; shift
 
   if [[ "${LOGGING}" -eq 1 ]]; then
-    # shellcheck disable=SC2090
     "$@" >"${LOGS_DIR}/${stage}.${node}.log" 2>&1 &
   else
     "$@" &
@@ -186,6 +201,35 @@ for i in "${!pids[@]}"; do
 done
 echo
 
+# ---- If SRC is a file, touch destination file on each node before transfer ----
+touch_fail=0
+if [[ "${SRC_IS_FILE}" -eq 1 ]]; then
+  echo "Touching destination file on each node before dsync: ${DEST_PATH}"
+  pids=()
+  for node in "${NODES[@]}"; do
+    # Ensure parent dir exists (DEST_PARENT is /tmp; if you ever allow subpaths, this still works)
+    run_bg "${node}" "touch" \
+      mpiexec -n 1 ${MPIEXEC_HOST_OPT} "${node}" bash -lc "mkdir -p \"$(dirname "${DEST_PATH}")\" && : > \"${DEST_PATH}\""
+    pids+=("$!")
+  done
+
+  for i in "${!pids[@]}"; do
+    pid="${pids[$i]}"
+    node="${NODES[$i]}"
+    if ! wait "${pid}"; then
+      if [[ "${LOGGING}" -eq 1 ]]; then
+        echo "ERROR: touch failed on ${node}. See ${LOGS_DIR}/touch.${node}.log" >&2
+      else
+        echo "ERROR: touch failed on ${node}." >&2
+      fi
+      touch_fail=1
+    else
+      echo "OK: touch ${node}"
+    fi
+  done
+  echo
+fi
+
 # ---- Run dsync on each node ----
 module load mpifileutils
 echo "Copying with dsync (${RANKS_PER_NODE} ranks per node)..."
@@ -193,7 +237,7 @@ pids=()
 for node in "${NODES[@]}"; do
   run_bg "${node}" "dsync" \
     mpiexec -n "${RANKS_PER_NODE}" $(${GET_CPU_BIND_AURORA} ${RANKS_PER_NODE}) ${MPIEXEC_HOST_OPT} "${node}" \
-      dsync -v "${SRC_DIR}" "${DEST_DIR}"
+      dsync -v "${SRC}" "${DEST_PATH}"
   pids+=("$!")
 done
 
@@ -222,7 +266,7 @@ if [[ "${LOGGING}" -eq 1 ]]; then
 fi
 
 # ---- Final status ----
-if [[ "${mkdir_fail}" -ne 0 || "${dsync_fail}" -ne 0 ]]; then
+if [[ "${mkdir_fail}" -ne 0 || "${touch_fail}" -ne 0 || "${dsync_fail}" -ne 0 ]]; then
   if [[ "${LOGGING}" -eq 1 ]]; then
     echo "One or more nodes failed. Check logs in ${ARCHIVE}" >&2
   else
@@ -232,5 +276,5 @@ if [[ "${mkdir_fail}" -ne 0 || "${dsync_fail}" -ne 0 ]]; then
 fi
 
 echo
-echo "All nodes now have: ${DEST_DIR}"
+echo "All nodes now have: ${DEST_PATH}"
 
