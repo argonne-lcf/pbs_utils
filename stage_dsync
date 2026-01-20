@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# stage_dsync
+# Usage: ./stage_dsync [-r RANKS_PER_NODE] [-L] SRC DEST
+
+RANKS_PER_NODE=8
+LOGGING=0
+
+usage() {
+  cat >&2 <<EOF
+Usage: $0 [-r RANKS_PER_NODE] [-L] SRC DEST
+
+  -r  MPI ranks per node for dsync (default: 8)
+  -L  Enable logging (archive per-node prep + dsync logs)
+
+DEST rules:
+  * If SRC is a directory: mkdir -p DEST, dsync SRC -> DEST
+  * If SRC is a file:
+      - If DEST ends with '/': mkdir -p DEST; touch DEST/basename(SRC);
+        dsync SRC -> DEST/basename(SRC)
+      - Else: mkdir -p dirname(DEST); touch DEST; dsync SRC -> DEST
+EOF
+  exit 2
+}
+
+while getopts ":r:Lh" opt; do
+  case "$opt" in
+    r) RANKS_PER_NODE="$OPTARG" ;;
+    L) LOGGING=1 ;;
+    h) usage ;;
+    \?) echo "Unknown option: -$OPTARG" >&2; usage ;;
+    :)  echo "Missing argument for -$OPTARG" >&2; usage ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[[ $# -eq 2 ]] || { echo "ERROR: expected SRC and DEST" >&2; usage; }
+
+SRC="$1"
+DEST="$2"
+
+[[ -e "$SRC" ]] || { echo "ERROR: SRC does not exist: $SRC" >&2; exit 1; }
+
+if ! [[ "$RANKS_PER_NODE" =~ ^[0-9]+$ ]] || [[ "$RANKS_PER_NODE" -lt 1 ]]; then
+  echo "ERROR: -r must be a positive integer (got: $RANKS_PER_NODE)" >&2
+  exit 1
+fi
+
+SRC_IS_DIR=0
+SRC_IS_FILE=0
+if [[ -d "$SRC" ]]; then
+  SRC_IS_DIR=1
+elif [[ -f "$SRC" ]]; then
+  SRC_IS_FILE=1
+else
+  echo "ERROR: SRC must be a regular file or directory: $SRC" >&2
+  exit 1
+fi
+
+# ---- Logs ----
+LOGS_DIR=""
+LOGS_BASE=""
+ARCHIVE=""
+if [[ "$LOGGING" -eq 1 ]]; then
+  RUN_TS="$(date +%Y%m%d_%H%M%S)"
+  LOGS_DIR="/tmp/stage_dsync_logs_${RUN_TS}"
+  LOGS_BASE="$(basename "$LOGS_DIR")"
+  ARCHIVE="${PWD}/${LOGS_BASE}.tar.gz"
+  mkdir -p "$LOGS_DIR"
+fi
+
+# ---- Nodes ----
+get_nodes() {
+  if [[ -n "${SLURM_NODELIST:-}" ]]; then
+    scontrol show hostnames "${SLURM_NODELIST}"
+  elif [[ -n "${PBS_NODEFILE:-}" && -f "${PBS_NODEFILE:-}" ]]; then
+    sort -u "${PBS_NODEFILE}"
+  else
+    echo "ERROR: Could not determine allocated nodes (SLURM_NODELIST or PBS_NODEFILE not set)." >&2
+    exit 1
+  fi
+}
+mapfile -t NODES < <(get_nodes)
+[[ "${#NODES[@]}" -gt 0 ]] || { echo "ERROR: Node list is empty." >&2; exit 1; }
+
+# ---- mpiexec host option ----
+MPIEXEC_HOST_OPT=""
+if mpiexec --help 2>&1 | grep -q -- '--host'; then
+  MPIEXEC_HOST_OPT="--host"
+elif mpiexec --help 2>&1 | grep -q -- '-hosts'; then
+  MPIEXEC_HOST_OPT="-hosts"
+elif mpiexec --help 2>&1 | grep -q -- '-host'; then
+  MPIEXEC_HOST_OPT="-host"
+else
+  echo "ERROR: Couldn't detect mpiexec host option (--host/-host/-hosts)." >&2
+  exit 1
+fi
+
+# ---- get_cpu_bind_aurora ----
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "$SCRIPT_DIR/get_cpu_bind_aurora" ]]; then
+  GET_CPU_BIND_AURORA="$SCRIPT_DIR/get_cpu_bind_aurora"
+else
+  GET_CPU_BIND_AURORA="get_cpu_bind_aurora"
+fi
+
+# ---- DEST_FINAL + prep ----
+DEST_FINAL="$DEST"
+PREP_DIR=""
+PREP_TOUCH=""
+
+if [[ "$SRC_IS_DIR" -eq 1 ]]; then
+  PREP_DIR="$DEST"
+else
+  if [[ "$DEST" == */ ]]; then
+    PREP_DIR="$DEST"
+    DEST_FINAL="${DEST%/}/$(basename "$SRC")"
+    PREP_TOUCH="$DEST_FINAL"
+  else
+    PREP_DIR="$(dirname "$DEST")"
+    DEST_FINAL="$DEST"
+    PREP_TOUCH="$DEST_FINAL"
+  fi
+fi
+
+echo "SRC:            $SRC"
+echo "SRC type:       $([[ $SRC_IS_DIR -eq 1 ]] && echo directory || echo file)"
+echo "DEST (input):   $DEST"
+echo "DEST (final):   $DEST_FINAL"
+echo "ranks/node:     $RANKS_PER_NODE"
+echo "nodes:          ${#NODES[@]} (${NODES[*]})"
+echo "mpiexec host:   $MPIEXEC_HOST_OPT"
+echo "logging:        $([[ $LOGGING -eq 1 ]] && echo on || echo off)"
+echo
+
+# helper: run one command on one node (optional log)
+run_on_node() {
+  local node="$1"; shift
+  local tag="$1"; shift
+  if [[ "$LOGGING" -eq 1 ]]; then
+    mpiexec -n 1 ${MPIEXEC_HOST_OPT} "$node" "$@" >"${LOGS_DIR}/${tag}.${node}.log" 2>&1
+  else
+    mpiexec -n 1 ${MPIEXEC_HOST_OPT} "$node" "$@"
+  fi
+}
+
+# ---- Prepare destinations ----
+prep_fail=0
+echo "Preparing destination on each node..."
+for node in "${NODES[@]}"; do
+  if ! run_on_node "$node" "prep_mkdir" mkdir -p "$PREP_DIR"; then
+    echo "ERROR: mkdir failed on $node" >&2
+    prep_fail=1
+    continue
+  fi
+
+  if [[ "$SRC_IS_FILE" -eq 1 ]]; then
+    if ! run_on_node "$node" "prep_touch" bash -lc ": > \"${PREP_TOUCH}\""; then
+      echo "ERROR: touch failed on $node" >&2
+      prep_fail=1
+      continue
+    fi
+  fi
+  echo "OK: $node"
+done
+echo
+
+[[ "$prep_fail" -eq 0 ]] || { echo "ERROR: prep failed on one or more nodes." >&2; exit 1; }
+
+# ---- dsync on each node ----
+module load mpifileutils
+echo "Copying with dsync..."
+pids=()
+for node in "${NODES[@]}"; do
+  if [[ "$LOGGING" -eq 1 ]]; then
+    (
+      mpiexec -n "${RANKS_PER_NODE}" $($GET_CPU_BIND_AURORA "${RANKS_PER_NODE}") \
+        ${MPIEXEC_HOST_OPT} "$node" \
+        dsync -v --xattrs none "$SRC" "$DEST_FINAL"
+    ) >"${LOGS_DIR}/dsync.${node}.log" 2>&1 &
+  else
+    mpiexec -n "${RANKS_PER_NODE}" $($GET_CPU_BIND_AURORA "${RANKS_PER_NODE}") \
+      ${MPIEXEC_HOST_OPT} "$node" \
+      dsync -v --xattrs none "$SRC" "$DEST_FINAL" &
+  fi
+  pids+=("$!")
+done
+
+dsync_fail=0
+for i in "${!pids[@]}"; do
+  pid="${pids[$i]}"
+  node="${NODES[$i]}"
+  if ! wait "$pid"; then
+    echo "ERROR: dsync failed on $node" >&2
+    dsync_fail=1
+  else
+    echo "OK: dsync $node"
+  fi
+done
+
+# ---- Archive logs ----
+if [[ "$LOGGING" -eq 1 ]]; then
+  echo
+  echo "Archiving logs to: ${ARCHIVE}"
+  tar -C /tmp -czf "${ARCHIVE}" "${LOGS_BASE}"
+  echo "Logs archived: ${ARCHIVE}"
+fi
+
+[[ "$dsync_fail" -eq 0 ]] || exit 1
+
+echo
+echo "Done. Each node should now have: ${DEST_FINAL}"
+
