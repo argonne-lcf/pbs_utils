@@ -5,91 +5,224 @@
 
 #!/bin/bash
 
-usage="Usage: $0 [-h] [-l] [prod|prod-large|debug|lustre_scaling|run_next|validation|alcf_kmd_val|intel|hpe|alcf_daos_cn|all]"
-helpText=$'Prints human-readable counts of status for nodes on Aurora.\n\
-  -l    List the hostnames of all free nodes in the selected queue\n\
-\tlustre_scaling\t\t\t- lustre(flare) testing nodes\n\
-\tvalidation | EarlyAppAccess\t- EarlyAppAccess queue nodes\n\
-\tintel\t\t\t\t- Intel system stabilization queue nodes\n\
-\thpe\t\t\t\t- HPE nodes\n\
-\talcf_daos_cn\t\t\t- DAOS client nodes\n\
-\talcf_kmd_val\t\t\t- KMD validation nodes\n\
-\tall\t\t\t\t- status of all nodes'
+usage="Usage: $0 [-h] [-l|--list] [--queue QUEUE] [--resource NAME]
+  Default: --queue all (show status of all nodes).
+  QUEUE: all, or any queue from PBS (qstat -Q), e.g. workq, prod, lustre_scaling
+  NAME: hpe (node resource filter)"
+helpText=$'Prints human-readable counts of status for nodes (candidates for jobs in the given queue).\n
+  -l, --list  List the hostnames of all free nodes in the selected queue\n
+  --queue     Select by queue name (default: all). Queues from qstat -Q; \"intel\" = prefix match.\n
+  --resource  Select by node resource (e.g. hpe)\n
+  Node eligibility is derived from PBS queue default_chunk (qstat -Q -f -F json).'
 
-# --- parse options ---
+# --- parse options (short and long) ---
 list_flag=false
-while getopts ":hl" opt; do
-  case "$opt" in
-    h)
+queue_arg=""
+resource_arg=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
       echo "$usage"
       echo
       echo "$helpText"
       exit 0
       ;;
-    l)
+    -l|--list)
       list_flag=true
+      shift
       ;;
-    \?)
-      echo "Unknown option: -$OPTARG" >&2
+    --queue)
+      if [ "$#" -lt 2 ]; then
+        echo "Missing value for --queue" >&2
+        echo "$usage" >&2
+        exit 1
+      fi
+      queue_arg="$2"
+      shift 2
+      ;;
+    --queue=*)
+      queue_arg="${1#--queue=}"
+      shift
+      ;;
+    --resource)
+      if [ "$#" -lt 2 ]; then
+        echo "Missing value for --resource" >&2
+        echo "$usage" >&2
+        exit 1
+      fi
+      resource_arg="$2"
+      shift 2
+      ;;
+    --resource=*)
+      resource_arg="${1#--resource=}"
+      shift
+      ;;
+    -?*)
+      echo "Unknown option: $1" >&2
+      echo "$usage" >&2
+      exit 1
+      ;;
+    *)
+      echo "Unknown or unexpected argument: $1" >&2
       echo "$usage" >&2
       exit 1
       ;;
   esac
 done
-shift $((OPTIND-1))
 
-# --- check for exactly one positional argument ---
-if [ "$#" -ne 1 ]; then
+# --- default: --queue all when neither --queue nor --resource given ---
+if [ -z "$queue_arg" ] && [ -z "$resource_arg" ]; then
+  queue_arg="all"
+fi
+if [ -n "$queue_arg" ] && [ -n "$resource_arg" ]; then
+  echo "Cannot use both --queue and --resource" >&2
   echo "$usage" >&2
   exit 1
 fi
-partition=$1
 
-# --- normalize legacy names ---
-if [[ "$partition" =~ ^(prod|prod-large|debug|debug-scaling|run_next)$ ]]; then
-  partition="lustre_scaling"
-elif [[ ! "$partition" =~ ^(lustre_scaling|validation|intel|hpe|alcf_daos_cn|alcf_kmd_val|all)$ ]]; then
-  echo "Unknown argument: $partition" >&2
-  echo "$usage" >&2
-  exit 1
+# --- set partition for rest of script ---
+if [ -n "$resource_arg" ]; then
+  partition="$resource_arg"
+else
+  partition="$queue_arg"
+fi
+
+# --- discover queue names from PBS (qstat -Q); only these are valid (no legacy list) ---
+valid_queues=()
+qstat_json=$(qstat -Q -f -F json 2>/dev/null) || true
+if [ -n "$qstat_json" ]; then
+  while IFS= read -r q; do
+    [ -n "$q" ] && valid_queues+=( "$q" )
+  done < <(echo "$qstat_json" | jq -r '.Queue | keys[]?' 2>/dev/null)
+fi
+
+# --- validate: resource must be hpe; queue must be all, intel (prefix), or in valid_queues ---
+if [ -n "$resource_arg" ]; then
+  if [[ "$partition" != "hpe" ]]; then
+    echo "Unknown resource: $partition" >&2
+    echo "$usage" >&2
+    exit 1
+  fi
+else
+  if [[ "$partition" != "all" ]] && [[ "$partition" != "intel" ]]; then
+    found=
+    for q in "${valid_queues[@]}"; do
+      [[ "$q" == "$partition" ]] && { found=1; break; }
+    done
+    if [[ -z "$found" ]]; then
+      echo "Invalid queue name: $partition" >&2
+      if [ ${#valid_queues[@]} -gt 0 ]; then
+        echo "Valid queue names: all, intel, $(printf '%s' "${valid_queues[*]}" | sed 's/ /, /g')" >&2
+      fi
+      echo "$usage" >&2
+      exit 1
+    fi
+  fi
+fi
+
+# --- resolve partition to execution-queue list (for default_chunk-based filtering) ---
+# - intel: queues whose name starts with "intel"
+# - Route queues: resolve to execution queues
+# - Execution queues: use as-is
+partition_exec_queues="$partition"
+if [ -n "$qstat_json" ] && [[ "$partition" != "all" ]]; then
+  if [[ "$partition" == "intel" ]]; then
+    # Prefix match: all queues whose name starts with "intel"
+    partition_exec_queues=$(echo "$qstat_json" | jq -r '
+      [.Queue | keys[] | select(startswith("intel"))] | join(",")
+    ' 2>/dev/null)
+    [[ -z "$partition_exec_queues" ]] && partition_exec_queues="intel"
+  fi
+fi
+if [ -n "$qstat_json" ] && [[ "$partition" != "all" ]] && [[ "$partition" != "intel" ]]; then
+  resolved=""
+  current="$partition"
+  seen=""
+  while [[ -n "$current" ]]; do
+    next_list=""
+    for q in $(echo "$current" | tr ',' ' '); do
+      q=$(echo "$q" | sed 's/^[ \t]*//;s/[ \t]*$//;s/@.*//')
+      [[ -z "$q" ]] && continue
+      [[ " $seen " == *" $q "* ]] && continue
+      seen="$seen $q "
+      qtype=$(echo "$qstat_json" | jq -r --arg q "$q" '(.Queue[$q].queue_type // "") | ascii_downcase' 2>/dev/null)
+      if [[ "$qtype" == "route" ]]; then
+        dests=$(echo "$qstat_json" | jq -r --arg q "$q" '
+          .Queue[$q].route_destinations
+          | if type == "array" then [.[] | tostring] | join(",")
+            elif type == "string" then .
+            else "" end
+          ' 2>/dev/null)
+        dests=$(echo "$dests" | sed 's/@[^,]*//g' | sed 's/^[ \t]*//;s/[ \t]*$//')
+        next_list="${next_list}${next_list:+,}$dests"
+      else
+        resolved="${resolved}${resolved:+,}$q"
+      fi
+    done
+    current=$(echo "$next_list" | sed 's/^,//' | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | sort -u | tr '\n' ',' | sed 's/,$//')
+  done
+  if [[ -n "$resolved" ]]; then
+    partition_exec_queues="$resolved"
+  fi
 fi
 
 # --- grab JSON once ---
 pbsnodesOutput=$(pbsnodes -a -F json)
 
+# --- node matches default_chunk from PBS queue config (from qstat -Q) ---
+# A node matches if it matches the default_chunk of any execution queue in partition_exec_queues.
+# Outputs matching nodes as JSON (-c). Use with jq to extract host or count.
+# extra_select: additional jq expression for select(), e.g. ".state==\"free\"" or ".state==$st"
+# count_broken: if "1", include broken nodes (for broken row); omit broken exclusion from queue match
+node_matches_default_chunk() {
+  local pbsnodes_json="$1"
+  local qstat_json="$2"
+  local part_list="$3"
+  local extra_select="${4:-true}"
+  local count_broken="${5:-0}"
+  if [ -z "$part_list" ]; then
+    return 1
+  fi
+  if [ -z "$qstat_json" ]; then
+    local broken_cond='(.resources_available.broken // "") != "True"'
+    [[ "$count_broken" == "1" ]] && broken_cond="true"
+    echo "$pbsnodes_json" | jq -c --arg part_list "$part_list" '
+      ($part_list | split(",") | map(select(length > 0))) as $list
+      | .nodes[]
+      | select(
+          '"$broken_cond"'
+          and ((.resources_available.at_queue // .resources_available.queue // .queue // "") as $q | ($q == "" or ($list | any(. as $elt | $q == $elt or ($q | startswith($elt))))))
+          and ('"${extra_select:-true}"')
+        )
+    ' 2>/dev/null
+  else
+    echo "$pbsnodes_json" | jq -c --argjson qstat "$qstat_json" --arg part_list "$part_list" --arg count_broken "$count_broken" '
+      ($part_list | split(",") | map(select(length > 0))) as $qnames
+      | .nodes[]
+      | . as $node
+      | select(
+          (if $count_broken == "1" then true else ($node.resources_available.broken // "") != "True" end)
+          and (
+            ($qnames | any(
+              . as $qname
+              | (($qstat.Queue[$qname].default_chunk // {at_queue: $qname}) as $chunk
+                | (($chunk.at_queue // "") == "" or (($node.resources_available.at_queue // "") == ($chunk.at_queue // "")))
+                and (if ($chunk.broken // "") == "False" and $count_broken != "1" then ($node.resources_available.broken // "") != "True" else true end)
+                and (if ($chunk.debug // "") == "False" then ($node.resources_available.debug // "") != "True" else true end)
+                and (if ($chunk.validation // "") == "False" then ($node.resources_available.validation // "") != "True" else true end)
+                )
+            ))
+          )
+          and ('"${extra_select:-true}"')
+        )
+    ' 2>/dev/null
+  fi
+}
+
 # --- function to list free-hostnames ---
 list_free_nodes() {
   case "$partition" in
-    lustre_scaling)
-      echo "$pbsnodesOutput" | jq -r '
-        .nodes[]
-        | select(
-            .state=="free"
-            and .resources_available.broken!="True"
-            and .resources_available.debug!="True"
-            and .resources_available.validation!="True"
-            and .resources_available.intel=="True"
-            and .resources_available.hpe!="True"
-            and (.resources_available.at_queue=="lustre_scaling" or .resources_available.at_queue=="run_next")
-          )
-        | .resources_available.host
-      '
-      ;;
-    intel|validation|alcf_kmd_val|alcf_daos_cn)
-      echo "$pbsnodesOutput" | jq -r --arg part "$partition" '
-        .nodes[]
-        | select(
-            .state=="free"
-            and .resources_available.broken!="True"
-            and .resources_available.debug!="True"
-            and .resources_available.validation!="True"
-            and .resources_available.intel=="True"
-            and .resources_available.hpe!="True"
-            and (.resources_available.at_queue | startswith($part))
-          )
-        | .resources_available.host
-      '
-      ;;
     hpe)
       echo "$pbsnodesOutput" | jq -r '
         .nodes[]
@@ -110,6 +243,10 @@ list_free_nodes() {
           )
         | .resources_available.host
       '
+      ;;
+    *)
+      # Queue-based: use default_chunk from PBS config
+      node_matches_default_chunk "$pbsnodesOutput" "$qstat_json" "$partition_exec_queues" '.state=="free"' | jq -r '.resources_available.host'
       ;;
   esac
 }
@@ -163,94 +300,6 @@ nodeStatuses=( $(
 
 totalNodes=0
 
-# --- lustre_scaling counts ---
-if [[ "$partition" == "lustre_scaling" ]]; then
-  echo
-  echo "PARTITION: lustre_scaling (same for prod[-large], debug[-scaling], run_next)"
-  echo "------------------------"
-  echo "Nodes  Status"
-  echo "-----  ------"
-  for status in "${nodeStatuses[@]}"; do
-    nodes=$(echo "$pbsnodesOutput" | jq -r --arg st "$status" '
-      .nodes[]
-      | select(
-          .state==$st
-          and .resources_available.debug!="True"
-          and .resources_available.validation!="True"
-          and .resources_available.intel=="True"
-          and .resources_available.hpe!="True"
-          and .resources_available.broken!="True"
-          and (.resources_available.at_queue=="lustre_scaling" or .resources_available.at_queue=="run_next")
-        )
-      | [.resources_available.host,.state] | @tsv
-    ' | grep "x" | wc -l)
-    printf "%5s  %-18s\n" "$nodes" "$status"
-    totalNodes=$((totalNodes + nodes))
-  done
-  nodes=$(echo "$pbsnodesOutput" | jq -r '
-    .nodes[]
-    | select(
-        .resources_available.debug!="True"
-        and .resources_available.validation!="True"
-        and .resources_available.intel=="True"
-        and .resources_available.hpe!="True"
-        and .resources_available.broken=="True"
-        and (.resources_available.at_queue=="lustre_scaling" or .resources_available.at_queue=="run_next")
-      )
-    | [.resources_available.host,.state] | @tsv
-  ' | grep "x" | wc -l)
-  printf "%5s  %-18s\n" "$nodes" "broken"
-  totalNodes=$((totalNodes + nodes))
-  echo "-----  --------------"
-  printf "%5s  %-18s\n" "$totalNodes" "Total Nodes"
-  echo
-  exit 0
-fi
-
-# --- intel/validation/alcf_kmd_val/alcf_daos_cn counts ---
-if [[ "$partition" =~ ^(intel|validation|alcf_kmd_val|alcf_daos_cn)$ ]]; then
-  echo
-  echo "PARTITION: $partition"
-  echo "------------------------"
-  echo "Nodes  Status"
-  echo "-----  ------"
-  for status in "${nodeStatuses[@]}"; do
-    nodes=$(echo "$pbsnodesOutput" | jq -r --arg st "$status" --arg part "$partition" '
-      .nodes[]
-      | select(
-          .state==$st
-          and .resources_available.debug!="True"
-          and .resources_available.validation!="True"
-          and .resources_available.intel=="True"
-          and .resources_available.hpe!="True"
-          and .resources_available.broken!="True"
-          and (.resources_available.at_queue | startswith($part))
-        )
-      | [.resources_available.host,.state] | @tsv
-    ' | grep "x" | wc -l)
-    printf "%5s  %-18s\n" "$nodes" "$status"
-    totalNodes=$((totalNodes + nodes))
-  done
-  nodes=$(echo "$pbsnodesOutput" | jq -r --arg part "$partition" '
-    .nodes[]
-    | select(
-        .resources_available.debug!="True"
-        and .resources_available.validation!="True"
-        and .resources_available.intel=="True"
-        and .resources_available.hpe!="True"
-        and .resources_available.broken=="True"
-        and (.resources_available.at_queue | startswith($part))
-      )
-    | [.resources_available.host,.state] | @tsv
-  ' | grep "x" | wc -l)
-  printf "%5s  %-18s\n" "$nodes" "broken"
-  totalNodes=$((totalNodes + nodes))
-  echo "-----  --------------"
-  printf "%5s  %-18s\n" "$totalNodes" "Total Nodes"
-  echo
-  exit 0
-fi
-
 # --- hpe counts ---
 if [[ "$partition" == "hpe" ]]; then
   echo
@@ -287,5 +336,21 @@ if [[ "$partition" == "hpe" ]]; then
   exit 0
 fi
 
-# --- fallback (should not reach here) ---
+# --- queue counts: use default_chunk from PBS config (covers lustre_scaling, prod, intel, etc.) ---
+echo
+echo "PARTITION: $partition"
+echo "------------------------"
+echo "Nodes  Status"
+echo "-----  ------"
+for status in "${nodeStatuses[@]}"; do
+  nodes=$(node_matches_default_chunk "$pbsnodesOutput" "$qstat_json" "$partition_exec_queues" ".state==\"$status\"" | wc -l)
+  printf "%5s  %-18s\n" "$nodes" "$status"
+  totalNodes=$((totalNodes + nodes))
+done
+nodes=$(node_matches_default_chunk "$pbsnodesOutput" "$qstat_json" "$partition_exec_queues" '.resources_available.broken=="True"' 1 | wc -l)
+printf "%5s  %-18s\n" "$nodes" "broken"
+totalNodes=$((totalNodes + nodes))
+echo "-----  --------------"
+printf "%5s  %-18s\n" "$totalNodes" "Total Nodes"
+echo
 exit 0
