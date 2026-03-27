@@ -12,7 +12,7 @@ Usage:
     python pbs_jobs_viewer.py [options]
 
 Options:
-    --sort FIELD     Sort by field (score, state, nodes, user, queue, jobid, project)
+    --sort FIELD     Sort by field (score, state, nodes, user, queue, jobid, jobname, project)
     --reverse        Sort in descending order (default: ascending)
     --state STATES   Filter by job state(s) (e.g., R, RQC, QF)
     --queue QUEUE    Filter by queue name
@@ -20,6 +20,7 @@ Options:
     --project PROJECT Filter by project name
     --limit N        Limit output to N jobs
     --extraCols COLS Comma-separated list of extra columns to include
+    --filter FILTERS Filter by any column value (format: column:value)
     --help           Show this help message
 
 Requirements:
@@ -662,14 +663,14 @@ def print_jobs(job_data: dict, server_data: dict = None,
                state_filter: str = None, queue_filter: str = None, 
                user_filter: str = None, project_filter: str = None, 
                jobid_filter: str = None, limit: int = None,
-               extra_columns: list = None) -> None:
+               extra_columns: list = None, column_filters: list = None) -> None:
     """
     Prints a simple summary of jobs showing ID, user, state, queue, nodes, score, project, walltime, runtime, and submitted time.
     
     Args:
         job_data (dict): Job information from qstat_jobs()
         server_data (dict, optional): Server information from qstat_server()
-        sort_by (str, optional): Field to sort by (score, state, nodes, user, queue, jobid, project, walltime, runtime, submitted)
+        sort_by (str, optional): Field to sort by (score, state, nodes, user, queue, jobid, jobname, project, walltime, runtime, submitted)
         reverse (bool): Sort in descending order if True
         state_filter (str, optional): Filter by job state
         queue_filter (str, optional): Filter by queue name
@@ -678,6 +679,7 @@ def print_jobs(job_data: dict, server_data: dict = None,
         jobid_filter (str, optional): Filter by comma-separated job IDs
         limit (int, optional): Limit output to N jobs
         extra_columns (list, optional): List of extra column specifications to include
+        column_filters (list, optional): List of column:value filters for any column (partial match)
     """
     if server_data is None:
         try:
@@ -708,17 +710,37 @@ def print_jobs(job_data: dict, server_data: dict = None,
     if jobid_filter:
         jobid_set = set(jid.strip() for jid in jobid_filter.split(',') if jid.strip())
 
+    # Parse column filters
+    parsed_column_filters = []
+    if column_filters:
+        for filter_spec in column_filters:
+            if ':' in filter_spec:
+                col_name, filter_value = filter_spec.split(':', 1)
+                parsed_column_filters.append((col_name.strip(), filter_value.strip()))
+            else:
+                logger.warning(f"Invalid filter format: {filter_spec}. Expected 'column:value'")
+
     # Convert jobs to list for sorting and filtering
     job_list = []
     for jobid, job in jobs.items():
         try:
             score = execute_job_sort_formula(server_data, job)
             jobid_short = jobid.split('.')[0]
-            user = job.get('Variable_List', {}).get('PBS_O_LOGNAME', 'Unknown')
+            user = job.get('Variable_List', {}).get('PBS_O_LOGNAME', None)
+            if not user:
+                # Fall back to Job_Owner (e.g. "zippy@hostname") when PBS_O_LOGNAME is absent,
+                # which can happen for jobs submitted by MCP servers or non-interactive methods.
+                owner = job.get('Job_Owner', '')
+                user = owner.split('@')[0] if owner else 'Unknown'
             state = job.get('job_state', 'Unknown')
             queue = job.get('queue', 'Unknown')
+            if len(queue) > 14:
+                queue = queue[:13] + '*'
             nodes = job.get('Resource_List', {}).get('nodect', 0)
             project = job.get('project', 'Unknown')
+            jobname = job.get('Job_Name', '--')
+            if len(jobname) > 14:
+                jobname = jobname[:13] + '*'
             walltime = format_time_display(job.get('Resource_List', {}).get('walltime', '--'))
             runtime = calculate_elapsed_runtime(job)
             submitted = format_submitted_time(job.get('qtime', ''))
@@ -751,6 +773,7 @@ def print_jobs(job_data: dict, server_data: dict = None,
                 'nodes': nodes,
                 'score': score,
                 'project': project,
+                'jobname': jobname,
                 'walltime': walltime,
                 'runtime': runtime,
                 'submitted': submitted
@@ -760,6 +783,25 @@ def print_jobs(job_data: dict, server_data: dict = None,
             if extra_columns:
                 extra_data = get_extra_columns_data(job, extra_columns)
                 job_dict.update(extra_data)
+            
+            # Apply generic column filters
+            if parsed_column_filters:
+                skip_job = False
+                for col_name, filter_value in parsed_column_filters:
+                    # Get the value from job_dict
+                    if col_name in job_dict:
+                        job_value = str(job_dict[col_name]).lower()
+                        filter_value_lower = filter_value.lower()
+                        # Partial match (case-insensitive)
+                        if filter_value_lower not in job_value:
+                            skip_job = True
+                            break
+                    else:
+                        # Column doesn't exist, skip this job
+                        skip_job = True
+                        break
+                if skip_job:
+                    continue
             
             job_list.append(job_dict)
         except Exception as e:
@@ -794,6 +836,8 @@ def print_jobs(job_data: dict, server_data: dict = None,
             job_list.sort(key=lambda x: x['queue'].lower(), reverse=reverse_order)
         elif sort_by == 'project':
             job_list.sort(key=lambda x: x['project'].lower(), reverse=reverse_order)
+        elif sort_by == 'jobname':
+            job_list.sort(key=lambda x: x['jobname'].lower(), reverse=reverse_order)
         elif sort_by == 'jobid':
             job_list.sort(key=lambda x: int(x['jobid']), reverse=reverse_order)
         elif sort_by == 'walltime':
@@ -817,7 +861,7 @@ def print_jobs(job_data: dict, server_data: dict = None,
         return
     
     # Build header and format string dynamically
-    base_columns = ['Job ID', 'User', 'State', 'Queue', 'Nodes', 'Score', 'Walltime', 'Runtime', 'Submitted']
+    base_columns = ['Job ID', 'User', 'State', 'Queue', 'Nodes', 'Score', 'Walltime', 'Runtime', 'Submitted', 'Jobname']
     extra_column_names = []
     
     if extra_columns:
@@ -828,20 +872,21 @@ def print_jobs(job_data: dict, server_data: dict = None,
                 display_name = column_spec.split('.')[-1]
             extra_column_names.append(display_name)
     
-    # Column order: base columns, Project (fixed width), then extra columns at the far right
+    # Column order: base columns (includes Jobname), Project (fixed width), then extra columns at the far right
     all_columns = base_columns + ['Project'] + extra_column_names
     
     # Build format string
     format_parts = []
-    format_parts.append("{jobid:<10s}")
-    format_parts.append("{user:>14s}")
-    format_parts.append("{state:>10s}")
-    format_parts.append("{queue:>20s}")
-    format_parts.append("{nodes:>10d}")
+    format_parts.append("{jobid:<8s}")
+    format_parts.append("{user:>15s}")
+    format_parts.append("{state:>6s}")
+    format_parts.append("{queue:>14s}")
+    format_parts.append("{nodes:>6d}")
     format_parts.append("{score:10.2f}")
-    format_parts.append("{walltime:>10s}")
-    format_parts.append("{runtime:>10s}")
+    format_parts.append("{walltime:>9s}")
+    format_parts.append("{runtime:>9s}")
     format_parts.append("{submitted:>12s}")
+    format_parts.append("{jobname:>14s}")
     format_parts.append("{project:>24s}")  # Fixed width project column
     for col_name in extra_column_names:
         format_parts.append(f"{{{col_name}:>15s}}")  # Extra columns get slightly wider width
@@ -849,15 +894,16 @@ def print_jobs(job_data: dict, server_data: dict = None,
     
     # Build header string
     header_parts = []
-    header_parts.append(f"{'Job ID':<10s}")
-    header_parts.append(f"{'User':>14s}")
-    header_parts.append(f"{'State':>10s}")
-    header_parts.append(f"{'Queue':>20s}")
-    header_parts.append(f"{'Nodes':>10s}")
+    header_parts.append(f"{'Job ID':<8s}")
+    header_parts.append(f"{'User':>15s}")
+    header_parts.append(f"{'State':>6s}")
+    header_parts.append(f"{'Queue':>14s}")
+    header_parts.append(f"{'Nodes':>6s}")
     header_parts.append(f"{'Score':>10s}")
-    header_parts.append(f"{'Walltime':>10s}")
-    header_parts.append(f"{'Runtime':>10s}")
+    header_parts.append(f"{'Walltime':>9s}")
+    header_parts.append(f"{'Runtime':>9s}")
     header_parts.append(f"{'Submitted':>12s}")
+    header_parts.append(f"{'Jobname':>14s}")
     header_parts.append(f"{'Project':>24s}")  # Fixed width project column
     for col_name in extra_column_names:
         header_parts.append(f"{col_name:>15s}")  # Extra columns get slightly wider width
@@ -895,6 +941,11 @@ Examples:
   python pbs_jobs_viewer.py --extraCols stime:Start  # Add job start time (datetimes auto-formatted compactly)
   python pbs_jobs_viewer.py --extraCols Resource_List.award_category:ProjType  # Add project type column with custom name
   python pbs_jobs_viewer.py --extraCols estimated.start_time:ETA,Resource_List.award_category:Type  # Add multiple columns
+  python pbs_jobs_viewer.py --filter user:zippy       # Filter by user column (same as --user but can be combined with any column)
+  python pbs_jobs_viewer.py --filter queue:prod       # Filter by queue column
+  python pbs_jobs_viewer.py --extraCols Resource_List.award_category:Type --filter Type:INCITE  # Add column and filter by it
+  python pbs_jobs_viewer.py --filter walltime:24:00:00 --state R  # Filter running jobs with 24 hour walltime
+  python pbs_jobs_viewer.py --filter user:zippy,queue:prod  # Multiple filters (AND logic)
         """
     )
     
@@ -916,6 +967,8 @@ Examples:
                        help='Limit output to N jobs')
     parser.add_argument('--extraCols', type=str,
                        help='Comma-separated list of extra columns to include. Format: field.path (use dots for nested fields) or field.path:DisplayName (colon for custom display name). Datetime values are automatically formatted as MM/DD HH:MM. Example: estimated.start_time or stime:Start')
+    parser.add_argument('--filter', type=str, dest='column_filters',
+                       help='Filter by any column value. Format: column:value or multiple filters separated by comma (e.g., "user:zippy" or "user:zippy,queue:prod"). Works with standard columns (jobid, user, state, queue, nodes, score, jobname, project, walltime, runtime, submitted) and extraCols. Case-insensitive partial match.')
     
     return parser.parse_args()
 
@@ -941,6 +994,11 @@ def main():
         if args.extraCols:
             extra_columns = [col.strip() for col in args.extraCols.split(',')]
         
+        # Parse column filters
+        column_filters = None
+        if args.column_filters:
+            column_filters = [f.strip() for f in args.column_filters.split(',')]
+        
         # Print jobs with filters and sorting
         print_jobs(job_data, 
                   sort_by=args.sort,
@@ -951,7 +1009,8 @@ def main():
                   project_filter=args.project,
                   jobid_filter=args.jobid,
                   limit=args.limit,
-                  extra_columns=extra_columns)
+                  extra_columns=extra_columns,
+                  column_filters=column_filters)
         
     except FileNotFoundError:
         logger.error("qstat command not found. Please ensure PBS is installed and qstat is in your PATH.")
