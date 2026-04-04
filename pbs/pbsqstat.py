@@ -5,6 +5,7 @@ import pandas as pd
 import dateutil,datetime
 import json
 import logging
+import re
 from tabulate import tabulate
 from .pbs_states import get_full_state_name,get_state_code
 logger = logging.getLogger(__name__)
@@ -497,5 +498,8 @@ def qstat_jobs(exec: str = '/opt/pbs/bin/qstat',
    cmd = exec + ' ' + ' '.join(args)
    completed_process = sp.run(cmd.split(' '),stdout=sp.PIPE,stderr=sp.PIPE)
    if completed_process.returncode != 0:
-      raise Exception(completed_process.stderr.decode('utf-8'))
-   return json.loads(completed_process.stdout.decode('utf-8'))
+      raise Exception(completed_process.stderr.decode('utf-8', errors='replace'))
+
+   decoded = completed_process.stdout.decode('utf-8', errors='replace')
+   cleaned = re.sub(r'[\x00-\x1F\x7F]', '', decoded)
+   return json.loads(cleaned)
