@@ -101,6 +101,8 @@ def repair_qstat_json(json_text):
     Returns:
         str: Repaired JSON text
     """
+    json_text = json_text.replace('\\\n', ' ')
+
     lines = json_text.split('\n')
     repaired_lines = []
     fix_count = 0
@@ -238,16 +240,16 @@ def qstat_jobs(exec_path='/opt/pbs/bin/qstat',
         
         # Try to parse JSON
         try:
-            return json.loads(output)
+            return json.loads(output, strict=False)
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON parsing failed: {e}")
-            logger.info("Attempting to repair malformed JSON...")
+            logger.debug(f"JSON parsing failed: {e}")
+            logger.debug("Attempting to repair malformed JSON...")
             
             # Apply JSON repair
             repaired_output = repair_qstat_json(output)
             
             try:
-                return json.loads(repaired_output)
+                return json.loads(repaired_output, strict=False)
             except json.JSONDecodeError as e2:
                 logger.warning(f"JSON repair failed: {e2}")
                 
@@ -478,10 +480,12 @@ def execute_job_sort_formula(server_data: dict, job_data: dict) -> float:
         backfill_factor   = float(rl.get('backfill_factor', 0))
         enable_fifo       = float(rl.get('enable_fifo', 0))
         fifo_factor       = float(rl.get('fifo_factor', 0))
+        wfp_eligible_time_exp   = float(rl.get('wfp_eligible_time_exp', 1))
+        wfp_req_walltime_exp    = float(rl.get('wfp_req_walltime_exp', 1))
+        wfp_system_ratio_factor = float(rl.get('wfp_system_ratio_factor', 1))
 
         return eval(formula_str)
-    except (KeyError, ValueError, TypeError, ZeroDivisionError, IndexError) as e:
-        # Return a default score if formula evaluation fails
+    except (KeyError, ValueError, TypeError, ZeroDivisionError, IndexError, NameError) as e:
         return 0.0
 
 def get_award_category_display(award_category):
@@ -771,7 +775,8 @@ def print_jobs(job_data: dict, server_data: dict = None,
                 'state': state,
                 'queue': queue,
                 'nodes': nodes,
-                'score': score,
+                'score_raw': score,
+                'score': f"{score:.2e}" if score > 999999 else f"{score:.2f}",
                 'project': project,
                 'jobname': jobname,
                 'walltime': walltime,
@@ -825,7 +830,7 @@ def print_jobs(job_data: dict, server_data: dict = None,
             # Sort by extra column using intelligent type detection
             job_list.sort(key=lambda x: convert_value_for_sorting(x.get(sort_by, '--'), reverse=reverse_order), reverse=reverse_order)
         elif sort_by == 'score':
-            job_list.sort(key=lambda x: x['score'], reverse=reverse_order)
+            job_list.sort(key=lambda x: x['score_raw'], reverse=reverse_order)
         elif sort_by == 'state':
             job_list.sort(key=lambda x: x['state'], reverse=reverse_order)
         elif sort_by == 'nodes':
@@ -877,12 +882,12 @@ def print_jobs(job_data: dict, server_data: dict = None,
     
     # Build format string
     format_parts = []
-    format_parts.append("{jobid:<8s}")
+    format_parts.append("{jobid:<12s}")
     format_parts.append("{user:>15s}")
     format_parts.append("{state:>6s}")
     format_parts.append("{queue:>14s}")
     format_parts.append("{nodes:>6d}")
-    format_parts.append("{score:10.2f}")
+    format_parts.append("{score:>10s}")
     format_parts.append("{walltime:>9s}")
     format_parts.append("{runtime:>9s}")
     format_parts.append("{submitted:>12s}")
@@ -894,7 +899,7 @@ def print_jobs(job_data: dict, server_data: dict = None,
     
     # Build header string
     header_parts = []
-    header_parts.append(f"{'Job ID':<8s}")
+    header_parts.append(f"{'Job ID':<12s}")
     header_parts.append(f"{'User':>15s}")
     header_parts.append(f"{'State':>6s}")
     header_parts.append(f"{'Queue':>14s}")
