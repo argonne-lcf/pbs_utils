@@ -177,6 +177,8 @@ def repair_qstat_json(json_text):
     repaired_text = '\n'.join(repaired_lines)
     
     # Additional fixes for common JSON issues
+    # Fix numbers with leading zeros (e.g. "SLOT":00000) — invalid JSON, quote them
+    repaired_text = re.sub(r'(":\s*)0(\d+)', r'\1"0\2"', repaired_text)
     # Fix missing quotes around string values (like commit hashes, IDs, etc.)
     repaired_text = re.sub(r':([0-9a-f]{32,})', r':"\1"', repaired_text)  # Long hex strings
     repaired_text = re.sub(r':([0-9]{10,})', r':"\1"', repaired_text)     # Long numeric strings
