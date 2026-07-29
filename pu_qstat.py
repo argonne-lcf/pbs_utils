@@ -207,8 +207,8 @@ def qstat_server(exec_path='/opt/pbs/bin/qstat',
         cmd = exec_path + ' ' + ' '.join(args)
         completed_process = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.PIPE, timeout=30)
         if completed_process.returncode != 0:
-            raise Exception(completed_process.stderr.decode('utf-8'))
-        return json.loads(completed_process.stdout.decode('utf-8'))
+            raise Exception(completed_process.stderr.decode('utf-8', errors='replace'))
+        return json.loads(completed_process.stdout.decode('utf-8', errors='replace'))
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse server JSON: {e}")
         return {"Server": {}}
@@ -235,9 +235,14 @@ def qstat_jobs(exec_path='/opt/pbs/bin/qstat',
         cmd = exec_path + ' ' + ' '.join(args)
         completed_process = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.PIPE, timeout=60)
         if completed_process.returncode != 0:
-            raise Exception(completed_process.stderr.decode('utf-8'))
-        
-        output = completed_process.stdout.decode('utf-8')
+            raise Exception(completed_process.stderr.decode('utf-8', errors='replace'))
+
+        raw = completed_process.stdout
+        # Strip PBS terminal artifact sequences (caret + bare double-quote + caret + high-bytes).
+        # Some PBS nodes emit these as formatting codes inside JSON string values, which
+        # both corrupts UTF-8 and embeds unescaped quotes that break the JSON parser.
+        raw = re.sub(rb'\x5e\x22(\x5e[\x80-\xff])+', b'', raw)
+        output = raw.decode('utf-8', errors='replace')
         logger.info(f"Received {len(output)} characters from qstat")
         
         # Try to parse JSON
@@ -294,8 +299,8 @@ def qstat_queues(exec_path='/opt/pbs/bin/qstat',
         cmd = exec_path + ' ' + ' '.join(args)
         completed_process = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.PIPE, timeout=30)
         if completed_process.returncode != 0:
-            raise Exception(completed_process.stderr.decode('utf-8'))
-        return json.loads(completed_process.stdout.decode('utf-8'))
+            raise Exception(completed_process.stderr.decode('utf-8', errors='replace'))
+        return json.loads(completed_process.stdout.decode('utf-8', errors='replace'))
     except (json.JSONDecodeError, Exception) as e:
         logger.warning(f"Failed to get/parse queue JSON: {e}")
         return {"Queue": {}}
