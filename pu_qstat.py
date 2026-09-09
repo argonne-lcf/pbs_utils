@@ -106,6 +106,14 @@ def repair_qstat_json(json_text):
     # Fix invalid backslash escapes (e.g. \&quot; from HTML-encoded PBS output)
     json_text = re.sub(r'\\(&)', r'\1', json_text)
 
+    # Fix invalid backslash escape sequences by doubling the backslash.
+    # PBS sometimes emits shell patterns like \[ (e.g. in Submit_arguments from
+    # grep -c "\["), which is not a valid JSON escape.  Double the backslash so
+    # the JSON parser sees \\[ (a literal backslash followed by a bracket).
+    # Valid JSON escapes after \ are: " \ / b f n r t u — leave those alone.
+    # Negative lookbehind avoids doubling an already-escaped \\ sequence.
+    json_text = re.sub(r'(?<!\\)\\([^"\\/bfnrtu\r\n])', r'\\\\\1', json_text)
+
     lines = json_text.split('\n')
     repaired_lines = []
     fix_count = 0
