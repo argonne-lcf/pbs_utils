@@ -103,6 +103,17 @@ def repair_qstat_json(json_text):
     """
     json_text = json_text.replace('\\\n', ' ')
 
+    # Fix invalid backslash escapes (e.g. \&quot; from HTML-encoded PBS output)
+    json_text = re.sub(r'\\(&)', r'\1', json_text)
+
+    # Fix invalid backslash escape sequences by doubling the backslash.
+    # PBS sometimes emits shell patterns like \[ (e.g. in Submit_arguments from
+    # grep -c "\["), which is not a valid JSON escape.  Double the backslash so
+    # the JSON parser sees \\[ (a literal backslash followed by a bracket).
+    # Valid JSON escapes after \ are: " \ / b f n r t u — leave those alone.
+    # Negative lookbehind avoids doubling an already-escaped \\ sequence.
+    json_text = re.sub(r'(?<!\\)\\([^"\\/bfnrtu\r\n])', r'\\\\\1', json_text)
+
     lines = json_text.split('\n')
     repaired_lines = []
     fix_count = 0
@@ -177,6 +188,8 @@ def repair_qstat_json(json_text):
     repaired_text = '\n'.join(repaired_lines)
     
     # Additional fixes for common JSON issues
+    # Fix numbers with leading zeros (e.g. "SLOT":00000) — invalid JSON, quote them
+    repaired_text = re.sub(r'(":\s*)0(\d+)', r'\1"0\2"', repaired_text)
     # Fix missing quotes around string values (like commit hashes, IDs, etc.)
     repaired_text = re.sub(r':([0-9a-f]{32,})', r':"\1"', repaired_text)  # Long hex strings
     repaired_text = re.sub(r':([0-9]{10,})', r':"\1"', repaired_text)     # Long numeric strings
@@ -205,8 +218,8 @@ def qstat_server(exec_path='/opt/pbs/bin/qstat',
         cmd = exec_path + ' ' + ' '.join(args)
         completed_process = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.PIPE, timeout=30)
         if completed_process.returncode != 0:
-            raise Exception(completed_process.stderr.decode('utf-8'))
-        return json.loads(completed_process.stdout.decode('utf-8'))
+            raise Exception(completed_process.stderr.decode('utf-8', errors='replace'))
+        return json.loads(completed_process.stdout.decode('utf-8', errors='replace'))
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse server JSON: {e}")
         return {"Server": {}}
@@ -233,9 +246,14 @@ def qstat_jobs(exec_path='/opt/pbs/bin/qstat',
         cmd = exec_path + ' ' + ' '.join(args)
         completed_process = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.PIPE, timeout=60)
         if completed_process.returncode != 0:
-            raise Exception(completed_process.stderr.decode('utf-8'))
-        
-        output = completed_process.stdout.decode('utf-8')
+            raise Exception(completed_process.stderr.decode('utf-8', errors='replace'))
+
+        raw = completed_process.stdout
+        # Strip PBS terminal artifact sequences (caret + bare double-quote + caret + high-bytes).
+        # Some PBS nodes emit these as formatting codes inside JSON string values, which
+        # both corrupts UTF-8 and embeds unescaped quotes that break the JSON parser.
+        raw = re.sub(rb'\x5e\x22(\x5e[\x80-\xff])+', b'', raw)
+        output = raw.decode('utf-8', errors='replace')
         logger.info(f"Received {len(output)} characters from qstat")
         
         # Try to parse JSON
@@ -292,8 +310,8 @@ def qstat_queues(exec_path='/opt/pbs/bin/qstat',
         cmd = exec_path + ' ' + ' '.join(args)
         completed_process = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.PIPE, timeout=30)
         if completed_process.returncode != 0:
-            raise Exception(completed_process.stderr.decode('utf-8'))
-        return json.loads(completed_process.stdout.decode('utf-8'))
+            raise Exception(completed_process.stderr.decode('utf-8', errors='replace'))
+        return json.loads(completed_process.stdout.decode('utf-8', errors='replace'))
     except (json.JSONDecodeError, Exception) as e:
         logger.warning(f"Failed to get/parse queue JSON: {e}")
         return {"Queue": {}}
